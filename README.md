@@ -3,6 +3,7 @@
 Dockyard is a terminal-based Docker container manager built specifically for resource constrained VPS servers, written in Rust and with performance in mind. 
 It provides real-time insights into your containers with minimal overhead and an easy-on-the-eyes UI.
 
+![Dockyard TUI](https://github.com/905timur/dockyard/blob/main/tui.png)
 
 ## Perfect For
 
