@@ -9,7 +9,8 @@
 // futures = "0.3"
 
 use anyhow::Result;
-use bollard::container::{ListContainersOptions, LogsOptions, StatsOptions};
+use bollard::container::{ListContainersOptions, LogsOptions, StatsOptions, InspectContainerOptions};
+use bollard::models::ContainerInspectResponse;
 use bollard::Docker;
 use chrono::Utc;
 use crossterm::{
@@ -20,10 +21,10 @@ use crossterm::{
 use futures::StreamExt;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap},
     Frame, Terminal,
 };
 use std::io;
@@ -50,20 +51,24 @@ struct ContainerStats {
     memory_limit: u64,
 }
 
-enum AppView {
-    ContainerList,
-    ContainerLogs(String, String),
-}
-
 struct App {
     docker: Docker,
     containers: Arc<RwLock<Vec<ContainerInfo>>>,
     container_stats: Arc<RwLock<std::collections::HashMap<String, ContainerStats>>>,
     table_state: TableState,
     show_all: bool,
-    last_update: Instant,
-    view: AppView,
-    logs: Vec<String>,
+    
+    // Selection state
+    selected_container_details: Arc<RwLock<Option<String>>>,
+    selected_container_logs: Arc<RwLock<Vec<String>>>,
+    last_fetched_id: Option<String>,
+    
+    // Logs state
+    logs_state: ListState,
+    auto_scroll: bool,
+    log_stream_task: Option<tokio::task::JoinHandle<()>>,
+
+    // Metrics
     total_containers: usize,
     running_count: usize,
     stopped_count: usize,
@@ -82,9 +87,12 @@ impl App {
             container_stats: container_stats.clone(),
             table_state: TableState::default(),
             show_all: true,
-            last_update: Instant::now(),
-            view: AppView::ContainerList,
-            logs: Vec::new(),
+            selected_container_details: Arc::new(RwLock::new(None)),
+            selected_container_logs: Arc::new(RwLock::new(Vec::new())),
+            last_fetched_id: None,
+            logs_state: ListState::default(),
+            auto_scroll: true,
+            log_stream_task: None,
             total_containers: 0,
             running_count: 0,
             stopped_count: 0,
@@ -94,6 +102,10 @@ impl App {
         app.refresh_containers().await?;
         if app.total_containers > 0 {
             app.table_state.select(Some(0));
+            // Trigger initial fetch
+            if let Some(container) = app.selected_container().await {
+                 app.trigger_fetch(container.id).await;
+            }
         }
         
         // Spawn background task for stats updates
@@ -111,6 +123,11 @@ impl App {
                     .collect();
                 drop(containers);
                 
+                if running_containers.is_empty() {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    continue;
+                }
+
                 // Fetch stats concurrently for all running containers
                 let stats_futures: Vec<_> = running_containers
                     .iter()
@@ -259,8 +276,6 @@ impl App {
         let mut containers = self.containers.write().await;
         *containers = new_containers;
         drop(containers);
-
-        self.last_update = Instant::now();
         Ok(())
     }
 
@@ -305,6 +320,78 @@ impl App {
             .and_then(|i| containers.get(i).cloned())
     }
 
+    async fn trigger_fetch(&mut self, container_id: String) {
+        if self.last_fetched_id.as_ref() == Some(&container_id) {
+            return;
+        }
+        
+        self.last_fetched_id = Some(container_id.clone());
+        
+        // Clear previous data
+        {
+            let mut details = self.selected_container_details.write().await;
+            *details = None;
+            let mut logs = self.selected_container_logs.write().await;
+            logs.clear();
+        }
+
+        let docker = self.docker.clone();
+        let details_lock = self.selected_container_details.clone();
+        let id_clone = container_id.clone();
+
+        // Spawn details fetch
+        tokio::spawn(async move {
+            let details_res = docker.inspect_container(&id_clone, None::<InspectContainerOptions>).await;
+            let details_str = match details_res {
+                Ok(info) => format_details(info),
+                Err(e) => format!("Error fetching details: {}", e),
+            };
+            *details_lock.write().await = Some(details_str);
+        });
+
+        // Start log stream
+        self.start_log_stream(container_id).await;
+    }
+
+    async fn start_log_stream(&mut self, container_id: String) {
+        // Abort previous task
+        if let Some(handle) = self.log_stream_task.take() {
+            handle.abort();
+        }
+
+        let docker = self.docker.clone();
+        let logs_lock = self.selected_container_logs.clone();
+        
+        let task = tokio::spawn(async move {
+            let options = LogsOptions::<String> {
+                stdout: true,
+                stderr: true,
+                follow: true,
+                tail: "100".to_string(),
+                timestamps: true,
+                ..Default::default()
+            };
+            
+            let mut stream = docker.logs(&container_id, Some(options));
+            
+            while let Some(log_result) = stream.next().await {
+                match log_result {
+                    Ok(log) => {
+                        let mut logs = logs_lock.write().await;
+                        logs.push(log.to_string());
+                        // Keep last 1000 lines to prevent memory issues
+                        if logs.len() > 1000 {
+                            logs.remove(0);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        
+        self.log_stream_task = Some(task);
+    }
+
     async fn restart_container(&mut self) -> Result<()> {
         if let Some(container) = self.selected_container().await {
             self.docker.restart_container(&container.id, None).await?;
@@ -341,6 +428,10 @@ impl App {
                 )
                 .await?;
             self.refresh_containers().await?;
+            // Reset selection if out of bounds
+            if self.total_containers > 0 && self.table_state.selected().unwrap_or(0) >= self.total_containers {
+                 self.table_state.select(Some(self.total_containers - 1));
+            }
         }
         Ok(())
     }
@@ -348,39 +439,71 @@ impl App {
     fn toggle_filter(&mut self) {
         self.show_all = !self.show_all;
     }
+}
 
-    async fn show_logs(&mut self) -> Result<()> {
-        if let Some(container) = self.selected_container().await {
-            let container_id = container.id.clone();
-            let container_name = container.name.clone();
+fn format_details(info: ContainerInspectResponse) -> String {
+    let mut s = String::new();
+    
+    // Image & Name
+    s.push_str("NAME: ");
+    s.push_str(&info.name.unwrap_or_default().trim_start_matches('/').to_string());
+    s.push_str("\n\n");
 
-            self.logs.clear();
+    s.push_str("IMAGE: ");
+    s.push_str(&info.config.as_ref().and_then(|c| c.image.clone()).unwrap_or_default());
+    s.push_str("\n\n");
 
-            let options = LogsOptions::<String> {
-                stdout: true,
-                stderr: true,
-                tail: "100".to_string(),
-                timestamps: true,
-                ..Default::default()
-            };
-
-            let mut log_stream = self.docker.logs(&container_id, Some(options));
-
-            while let Some(log) = log_stream.next().await {
-                if let Ok(log) = log {
-                    self.logs.push(log.to_string());
+    // Network
+    s.push_str("NETWORK:\n");
+    if let Some(net) = info.network_settings {
+        if let Some(ports) = net.ports {
+            for (k, v) in ports {
+                if let Some(bindings) = v {
+                    for b in bindings {
+                        s.push_str(&format!("  {} -> {}:{}\n", k, b.host_ip.clone().unwrap_or_default(), b.host_port.clone().unwrap_or_default()));
+                    }
+                } else {
+                    s.push_str(&format!("  {}\n", k));
                 }
             }
-
-            self.view = AppView::ContainerLogs(container_id, container_name);
         }
-        Ok(())
+        if let Some(networks) = net.networks {
+            for (name, _) in networks {
+                s.push_str(&format!("  Network: {}\n", name));
+            }
+        }
     }
+    s.push('\n');
 
-    fn exit_logs(&mut self) {
-        self.view = AppView::ContainerList;
-        self.logs.clear();
+    // Resources
+    s.push_str("RESOURCES:\n");
+    if let Some(host_config) = info.host_config.as_ref() {
+        s.push_str(&format!("  Memory: {}\n", format_bytes(host_config.memory.unwrap_or(0) as u64)));
+        s.push_str(&format!("  NanoCPUs: {}\n", host_config.nano_cpus.unwrap_or(0)));
+        if let Some(restart) = &host_config.restart_policy {
+            let restart_policy = restart.name.as_ref()
+                .map(|n| format!("{:?}", n))
+                .unwrap_or_else(|| "no".to_string());
+            s.push_str(&format!("  Restart: {}\n", restart_policy));
+        }
     }
+    s.push('\n');
+
+    // Environment
+    s.push_str("ENV:\n");
+    if let Some(config) = info.config {
+        if let Some(env) = config.env {
+            for e in env {
+                s.push_str(&format!("  {}\n", e));
+            }
+        }
+    }
+    s.push('\n');
+
+    // Created
+    s.push_str(&format!("Created: {}\n", info.created.unwrap_or_default()));
+
+    s
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -413,64 +536,65 @@ fn format_uptime(created: i64) -> String {
     }
 }
 
-async fn draw_container_list(f: &mut Frame<'_>, app: &App) {
+async fn draw_ui(f: &mut Frame<'_>, app: &App) {
     let area = f.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
+    
+    // Split screen: Left (25%) and Right (75%)
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Percentage(25),
+            Constraint::Percentage(75),
         ])
         .split(area);
+    
+    let left_pane = main_chunks[0];
+    let right_pane = main_chunks[1];
 
-    // Stats bar
-    let stats_text = vec![Line::from(vec![
-        Span::styled("Containers: ", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(
-            format!("{} ", app.total_containers),
-            Style::default().fg(Color::White).bold(),
-        ),
-        Span::styled("Running: ", Style::default().fg(Color::Green).bold()),
-        Span::styled(
-            format!("{} ", app.running_count),
-            Style::default().fg(Color::White).bold(),
-        ),
-        Span::styled("Stopped: ", Style::default().fg(Color::Red).bold()),
-        Span::styled(
-            format!("{} ", app.stopped_count),
-            Style::default().fg(Color::White).bold(),
-        ),
-        Span::styled(" │ ", Style::default().dim()),
-        Span::styled(
-            format!(
-                "Filter: {} ",
-                if app.show_all { "all" } else { "running" }
-            ),
-            Style::default().dim().italic(),
-        ),
-    ])];
+    // Split Right Pane: Top (50%) and Bottom (50%)
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(right_pane);
 
-    let stats_block = Paragraph::new(stats_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(" Dockyard ")
-                .title_alignment(Alignment::Center),
-        )
-        .alignment(Alignment::Left);
-    f.render_widget(stats_block, chunks[0]);
+    let top_right_pane = right_chunks[0];
+    let bottom_right_pane = right_chunks[1];
 
-    // Container table
+    // Render Panes
+    render_container_details(f, left_pane, app).await;
+    render_container_list(f, top_right_pane, app).await;
+    render_container_logs(f, bottom_right_pane, app).await;
+}
+
+async fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
+    let details_lock = app.selected_container_details.read().await;
+    let details_text = match details_lock.as_ref() {
+        Some(text) => text.clone(),
+        None => "Select a container to view details".to_string(),
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Details ")
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let paragraph = Paragraph::new(details_text)
+        .block(block)
+        .wrap(Wrap { trim: true });
+    
+    f.render_widget(paragraph, area);
+}
+
+async fn render_container_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let containers = app.containers.read().await;
-    let stats_map = app.container_stats.read().await;
-
-    let header_cells = ["ID", "NAME", "STATUS", "IMAGE", "PORTS", "CPU%", "MEM", "UP"]
+    
+    // Header cells - simplified for compact view if needed, but we have space
+    let header_cells = ["NAME", "STATUS", "IMG", "UP"]
         .iter()
-        .map(|h| {
-            Cell::from(*h).style(Style::default().fg(Color::Black).bg(Color::Cyan).bold())
-        });
+        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Black).bg(Color::Cyan).bold()));
     let header = Row::new(header_cells).height(1);
 
     let rows = containers.iter().map(|c| {
@@ -481,143 +605,92 @@ async fn draw_container_list(f: &mut Frame<'_>, app: &App) {
             _ => ("○", Color::Gray),
         };
 
-        let (cpu_str, mem_str) = if c.state == "running" {
-            if let Some(stats) = stats_map.get(&c.id) {
-                (
-                    format!("{:.0}", stats.cpu_percent),
-                    format_bytes(stats.memory_usage),
-                )
-            } else {
-                ("-".to_string(), "-".to_string())
-            }
-        } else {
-            ("-".to_string(), "-".to_string())
-        };
-
         let uptime = if c.state == "running" {
             format_uptime(c.created)
         } else {
             "-".to_string()
         };
 
+        // Shorten image name
+        let image = if c.image.len() > 15 {
+             format!("{}...", &c.image[0..12])
+        } else {
+             c.image.clone()
+        };
+
         let cells = vec![
-            Cell::from(c.short_id.clone()),
             Cell::from(c.name.clone()).style(Style::default().fg(Color::Cyan)),
             Cell::from(format!("{} {}", status_symbol, c.state))
                 .style(Style::default().fg(status_color).bold()),
-            Cell::from(c.image.chars().take(25).collect::<String>()),
-            Cell::from(c.ports.chars().take(12).collect::<String>()),
-            Cell::from(cpu_str),
-            Cell::from(mem_str),
+            Cell::from(image),
             Cell::from(uptime),
         ];
         Row::new(cells).height(1)
     });
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(12),
-            Constraint::Length(18),
-            Constraint::Length(11),
-            Constraint::Length(26),
-            Constraint::Length(13),
-            Constraint::Length(5),
-            Constraint::Length(7),
-            Constraint::Length(7),
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta))
-            .title(" Containers ")
-            .title_alignment(Alignment::Center),
-    )
-    .highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ");
+    // Adjust constraints for the list columns
+    let widths = [
+        Constraint::Percentage(30),
+        Constraint::Percentage(20),
+        Constraint::Percentage(30),
+        Constraint::Percentage(20),
+    ];
 
-    f.render_stateful_widget(table, chunks[1], &mut app.table_state.clone());
-
-    // Footer
-    let footer_text = vec![Line::from(vec![
-        Span::styled("↑↓", Style::default().fg(Color::Cyan).bold()),
-        Span::raw(" Nav  "),
-        Span::styled("l", Style::default().fg(Color::Green).bold()),
-        Span::raw(" Logs  "),
-        Span::styled("r", Style::default().fg(Color::Yellow).bold()),
-        Span::raw(" Restart  "),
-        Span::styled("s", Style::default().fg(Color::Red).bold()),
-        Span::raw(" Stop  "),
-        Span::styled("t", Style::default().fg(Color::Green).bold()),
-        Span::raw(" Start  "),
-        Span::styled("d", Style::default().fg(Color::Magenta).bold()),
-        Span::raw(" Remove  "),
-        Span::styled("f", Style::default().fg(Color::Cyan).bold()),
-        Span::raw(" Filter  "),
-        Span::styled("q", Style::default().fg(Color::Red).bold()),
-        Span::raw(" Quit"),
-    ])];
-
-    let footer = Paragraph::new(footer_text)
-        .block(Block::default().borders(Borders::ALL))
-        .alignment(Alignment::Center);
-    f.render_widget(footer, chunks[2]);
-}
-
-fn draw_logs_view(f: &mut Frame<'_>, app: &App, container_name: &str) {
-    let area = f.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    // Header
-    let header = Paragraph::new(format!("Container: {}", container_name))
+    let table = Table::new(rows, widths)
+        .header(header)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(" Logs ")
-                .title_alignment(Alignment::Center),
+                .title(format!(" Containers ({}) ", app.total_containers))
+                .border_style(Style::default().fg(Color::Magenta))
         )
-        .style(Style::default().fg(Color::Cyan).bold())
-        .alignment(Alignment::Center);
-    f.render_widget(header, chunks[0]);
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
 
-    // Logs - show last 100 lines to avoid memory issues
-    let start_idx = app.logs.len().saturating_sub(100);
-    let logs_items: Vec<ListItem> = app.logs[start_idx..]
+    f.render_stateful_widget(table, area, &mut app.table_state.clone());
+}
+
+async fn render_container_logs(f: &mut Frame<'_>, area: Rect, app: &App) {
+    let logs_lock = app.selected_container_logs.read().await;
+    
+    let logs_items: Vec<ListItem> = logs_lock
         .iter()
-        .map(|log| ListItem::new(log.as_str()))
+        .map(|log| {
+             let lower = log.to_lowercase();
+             let style = if lower.contains("error") {
+                 Style::default().fg(Color::Red)
+             } else if lower.contains("warn") {
+                 Style::default().fg(Color::Yellow)
+             } else if lower.contains("info") {
+                 Style::default().fg(Color::Green)
+             } else {
+                 Style::default().fg(Color::White)
+             };
+             ListItem::new(Line::from(Span::styled(log.as_str(), style)))
+        })
         .collect();
+
+    let title = if app.auto_scroll {
+        " Logs (Live - Auto Scroll) "
+    } else {
+        " Logs (Live - Manual Scroll) "
+    };
 
     let logs_list = List::new(logs_items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Magenta))
-                .title(" Output ")
-                .title_alignment(Alignment::Center),
+                .title(title)
+                .border_style(Style::default().fg(Color::Yellow))
         )
-        .style(Style::default().fg(Color::White));
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-    f.render_widget(logs_list, chunks[1]);
-
-    // Footer
-    let footer = Paragraph::new("Press q or ESC to return")
-        .style(Style::default().fg(Color::Cyan))
-        .alignment(Alignment::Center);
-    f.render_widget(footer, chunks[2]);
+    let mut state = app.logs_state.clone();
+    f.render_stateful_widget(logs_list, area, &mut state);
 }
 
 #[tokio::main]
@@ -631,67 +704,110 @@ async fn main() -> Result<()> {
 
     let mut app = App::new().await?;
     let mut last_container_update = Instant::now();
+    let mut last_selection_change = Instant::now();
+    let mut needs_fetch = true; // Fetch initially
 
     loop {
-        // Refresh container list every 15 seconds (reduced frequency)
-        if last_container_update.elapsed() > Duration::from_secs(15) {
+        // Refresh container list every 5 seconds
+        if last_container_update.elapsed() > Duration::from_secs(5) {
             let _ = app.refresh_containers().await;
             last_container_update = Instant::now();
         }
 
-        // Draw UI
-        match &app.view {
-            AppView::ContainerList => {
-                terminal.draw(|f| {
-                    let app_ref = &app;
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(draw_container_list(f, app_ref))
-                    });
-                })?;
+        // Debounced Fetch
+        if needs_fetch && last_selection_change.elapsed() > Duration::from_millis(150) {
+            if let Some(container) = app.selected_container().await {
+                app.trigger_fetch(container.id).await;
+            } else {
+                 // Clear if nothing selected
+                *app.selected_container_details.write().await = None;
+                app.selected_container_logs.write().await.clear();
             }
-            AppView::ContainerLogs(_, name) => {
-                let name = name.clone();
-                terminal.draw(|f| draw_logs_view(f, &app, &name))?;
+            needs_fetch = false;
+        }
+
+        // Auto-scroll logs
+        if app.auto_scroll {
+            let logs_len = app.selected_container_logs.read().await.len();
+            if logs_len > 0 {
+                app.logs_state.select(Some(logs_len - 1));
             }
         }
 
-        // Poll for events with longer timeout for less CPU usage
-        if event::poll(Duration::from_millis(250))? {
+        // Draw UI
+        terminal.draw(|f| {
+            let app_ref = &app;
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(draw_ui(f, app_ref))
+            });
+        })?;
+
+        // Poll for events
+        if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    match &app.view {
-                        AppView::ContainerList => match key.code {
-                            KeyCode::Char('q') => break,
-                            KeyCode::Down | KeyCode::Char('j') => app.next(),
-                            KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                            KeyCode::Char('r') => {
-                                let _ = app.restart_container().await;
-                                let _ = app.refresh_containers().await;
-                            }
-                            KeyCode::Char('s') => {
-                                let _ = app.stop_container().await;
-                                let _ = app.refresh_containers().await;
-                            }
-                            KeyCode::Char('t') => {
-                                let _ = app.start_container().await;
-                                let _ = app.refresh_containers().await;
-                            }
-                            KeyCode::Char('d') => {
-                                let _ = app.remove_container().await;
-                            }
-                            KeyCode::Char('f') => {
-                                app.toggle_filter();
-                                let _ = app.refresh_containers().await;
-                            }
-                            KeyCode::Char('l') => {
-                                let _ = app.show_logs().await;
-                            }
-                            _ => {}
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => break,
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.next();
+                            last_selection_change = Instant::now();
+                            needs_fetch = true;
                         },
-                        AppView::ContainerLogs(_, _) => match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => app.exit_logs(),
-                            _ => {}
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.previous();
+                            last_selection_change = Instant::now();
+                            needs_fetch = true;
                         },
+                        KeyCode::Char('r') => {
+                            let _ = app.restart_container().await;
+                            let _ = app.refresh_containers().await;
+                        }
+                        KeyCode::Char('s') => {
+                            let _ = app.stop_container().await;
+                            let _ = app.refresh_containers().await;
+                        }
+                        KeyCode::Char('t') => {
+                            let _ = app.start_container().await;
+                            let _ = app.refresh_containers().await;
+                        }
+                        KeyCode::Char('d') => {
+                            let _ = app.remove_container().await;
+                        }
+                        KeyCode::Char('f') => {
+                            app.toggle_filter();
+                            let _ = app.refresh_containers().await;
+                            needs_fetch = true;
+                        }
+                        KeyCode::Char('a') => {
+                            app.auto_scroll = !app.auto_scroll;
+                        }
+                        KeyCode::Char('J') => {
+                            app.auto_scroll = false;
+                            let logs_len = app.selected_container_logs.read().await.len();
+                            if logs_len > 0 {
+                                let i = match app.logs_state.selected() {
+                                    Some(i) => {
+                                        if i >= logs_len - 1 { logs_len - 1 } else { i + 1 }
+                                    },
+                                    None => 0,
+                                };
+                                app.logs_state.select(Some(i));
+                            }
+                        }
+                        KeyCode::Char('K') => {
+                            app.auto_scroll = false;
+                            let logs_len = app.selected_container_logs.read().await.len();
+                            if logs_len > 0 {
+                                let i = match app.logs_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 { 0 } else { i - 1 }
+                                    },
+                                    None => 0,
+                                };
+                                app.logs_state.select(Some(i));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
