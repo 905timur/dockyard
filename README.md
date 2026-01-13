@@ -58,6 +58,7 @@ sudo usermod -aG docker $USER
 
 | Key | Action |
 |-----|--------|
+| `?` | Help menu |
 | `↑`/`↓` or `j`/`k` | Navigate containers |
 | `i` | View resource history graphs |
 | `l` | View container logs |
