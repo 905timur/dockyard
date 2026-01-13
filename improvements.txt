@@ -1,0 +1,128 @@
+Essential Features 🔥
+
+Container Search/Filter
+
+Press / to search by name, ID, or image
+Fuzzy matching for quick navigation
+
+
+Bulk Operations
+
+Select multiple containers (spacebar to toggle)
+Stop/start/restart multiple at once
+Great for microservices architectures
+
+
+Resource Alerts 🚨
+
+Visual warnings when CPU > 80% or Memory > 90%
+Highlight containers consuming excessive resources
+Configurable thresholds
+
+
+Docker Compose Integration
+
+Group related containers by compose project
+Start/stop entire stacks at once
+Show service dependencies
+
+
+
+Power User Features ⚡
+
+Real-time Log Streaming (not just historical)
+
+Live tail logs in the logs view
+Color-coded log levels (ERROR, WARN, INFO)
+Auto-scroll toggle
+
+
+Network Inspection
+
+Show container networks
+View connected containers
+Display IP addresses
+
+
+Volume Management
+
+List mounted volumes
+Show disk usage per volume
+Quick volume cleanup for unused volumes
+
+
+Container Shell
+
+Press e to exec into container
+Quick shell access without leaving TUI
+Choice of shell (bash/sh/ash)
+
+
+
+VPS-Specific Features 💎
+
+Resource History Graphs
+
+Mini sparkline graphs for CPU/memory trends
+5-minute history to spot patterns
+Low memory footprint implementation
+
+
+Export/Backup
+
+Export container configurations
+Quick container export to tar
+Backup volumes
+
+
+Image Management
+
+List images with sizes
+Prune unused images
+Show dangling images (saves disk!)
+
+
+Container Templates
+
+Save frequently used run commands
+Quick deploy from templates
+Great for common services
+
+
+
+Quality of Life ✨
+
+Sorting Options
+
+Sort by CPU, memory, name, uptime
+Press 1-9 for different sort modes
+
+
+Help Panel
+
+Press ? for keybinding reference
+Context-sensitive help
+
+
+Configuration File
+
+Save preferences (~/.config/dockyard/config.toml)
+Custom keybindings
+Default filters and refresh rates
+
+
+Container Inspect
+
+View full container details
+Environment variables
+Labels and metadata
+
+
+
+My Top 3 Recommendations:
+
+Real-time log streaming - Most requested feature
+Resource alerts - Critical for VPS monitoring
+Container search - Essential for many containers
+
+Would you like me to implement any of these? I'd suggest starting with search/filter + resource alerts as they're high-impact and relatively straightforward! 🎯
