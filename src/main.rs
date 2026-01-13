@@ -24,7 +24,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Sparkline, Table, TableState, Wrap},
     Frame, Terminal,
 };
 use std::io;
@@ -49,6 +49,8 @@ struct ContainerStats {
     cpu_percent: f64,
     memory_usage: u64,
     memory_limit: u64,
+    cpu_history: Vec<u64>,
+    memory_history: Vec<u64>,
 }
 
 struct App {
@@ -73,6 +75,9 @@ struct App {
     running_count: usize,
     stopped_count: usize,
     paused_count: usize,
+
+    // UI State
+    show_help: bool,
 }
 
 impl App {
@@ -97,6 +102,7 @@ impl App {
             running_count: 0,
             stopped_count: 0,
             paused_count: 0,
+            show_help: false,
         };
         
         app.refresh_containers().await?;
@@ -175,11 +181,9 @@ impl App {
 
                                 Some((
                                     id,
-                                    ContainerStats {
-                                        cpu_percent,
-                                        memory_usage,
-                                        memory_limit,
-                                    },
+                                    cpu_percent,
+                                    memory_usage,
+                                    memory_limit,
                                 ))
                             } else {
                                 None
@@ -191,8 +195,28 @@ impl App {
                 let results = futures::future::join_all(stats_futures).await;
                 
                 let mut stats_map = stats_clone.write().await;
-                for result in results.into_iter().flatten() {
-                    stats_map.insert(result.0, result.1);
+                for (id, cpu, mem, limit) in results.into_iter().flatten() {
+                    stats_map.entry(id)
+                        .and_modify(|stats| {
+                            stats.cpu_percent = cpu;
+                            stats.memory_usage = mem;
+                            stats.memory_limit = limit;
+                            stats.cpu_history.push((cpu * 100.0) as u64);
+                            stats.memory_history.push(mem);
+                            if stats.cpu_history.len() > 100 {
+                                stats.cpu_history.remove(0);
+                            }
+                            if stats.memory_history.len() > 100 {
+                                stats.memory_history.remove(0);
+                            }
+                        })
+                        .or_insert_with(|| ContainerStats {
+                            cpu_percent: cpu,
+                            memory_usage: mem,
+                            memory_limit: limit,
+                            cpu_history: vec![(cpu * 100.0) as u64],
+                            memory_history: vec![mem],
+                        });
                 }
                 drop(stats_map);
                 
@@ -567,6 +591,60 @@ async fn draw_ui(f: &mut Frame<'_>, app: &App) {
     render_container_details(f, left_pane, app).await;
     render_container_list(f, top_right_pane, app).await;
     render_container_logs(f, bottom_right_pane, app).await;
+
+    if app.show_help {
+        render_help(f, area);
+    }
+}
+
+fn render_help(f: &mut Frame<'_>, area: Rect) {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(area);
+
+    let popup_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(popup_layout[1])[1];
+
+    let help_text = vec![
+        Line::from("Navigation:"),
+        Line::from("  ↑/↓ or j/k: Select container"),
+        Line::from("  Esc or q: Close help / Quit"),
+        Line::from(""),
+        Line::from("Actions:"),
+        Line::from("  s: Stop container"),
+        Line::from("  t: Start container"),
+        Line::from("  r: Restart container"),
+        Line::from("  d: Remove container"),
+        Line::from("  f: Toggle filter (All/Running)"),
+        Line::from("  a: Toggle auto-scroll logs"),
+        Line::from("  J/K: Scroll logs manually"),
+        Line::from(""),
+        Line::from("General:"),
+        Line::from("  ?: Toggle this help menu"),
+    ];
+
+    let block = Block::default()
+        .title(" Help ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let paragraph = Paragraph::new(help_text)
+        .block(block)
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(Clear, popup_area);
+    f.render_widget(paragraph, popup_area);
 }
 
 async fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
@@ -575,6 +653,19 @@ async fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
         Some(text) => text.clone(),
         None => "Select a container to view details".to_string(),
     };
+    drop(details_lock);
+
+    // Split area: Top for text, Bottom for graphs
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(10), // Text area
+            Constraint::Length(10), // Graphs area
+        ])
+        .split(area);
+
+    let text_area = chunks[0];
+    let graphs_area = chunks[1];
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -585,7 +676,46 @@ async fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
         .block(block)
         .wrap(Wrap { trim: true });
     
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, text_area);
+
+    // Render Graphs if a container is selected
+    if let Some(container) = app.selected_container().await {
+        let stats_map = app.container_stats.read().await;
+        if let Some(stats) = stats_map.get(&container.id) {
+            // Split graphs area: Left CPU, Right Memory
+            let graph_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
+                .split(graphs_area);
+            
+            // CPU Graph
+            let cpu_block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" CPU: {:.2}% ", stats.cpu_percent));
+            
+            let cpu_sparkline = Sparkline::default()
+                .block(cpu_block)
+                .data(&stats.cpu_history)
+                .style(Style::default().fg(Color::Green));
+            
+            f.render_widget(cpu_sparkline, graph_chunks[0]);
+
+            // Memory Graph
+            let mem_block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" MEM: {} ", format_bytes(stats.memory_usage)));
+            
+            let mem_sparkline = Sparkline::default()
+                .block(mem_block)
+                .data(&stats.memory_history)
+                .style(Style::default().fg(Color::Magenta));
+             
+            f.render_widget(mem_sparkline, graph_chunks[1]);
+        }
+    }
 }
 
 async fn render_container_list(f: &mut Frame<'_>, area: Rect, app: &App) {
@@ -746,68 +876,78 @@ async fn main() -> Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => break,
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.next();
-                            last_selection_change = Instant::now();
-                            needs_fetch = true;
-                        },
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.previous();
-                            last_selection_change = Instant::now();
-                            needs_fetch = true;
-                        },
-                        KeyCode::Char('r') => {
-                            let _ = app.restart_container().await;
-                            let _ = app.refresh_containers().await;
-                        }
-                        KeyCode::Char('s') => {
-                            let _ = app.stop_container().await;
-                            let _ = app.refresh_containers().await;
-                        }
-                        KeyCode::Char('t') => {
-                            let _ = app.start_container().await;
-                            let _ = app.refresh_containers().await;
-                        }
-                        KeyCode::Char('d') => {
-                            let _ = app.remove_container().await;
-                        }
-                        KeyCode::Char('f') => {
-                            app.toggle_filter();
-                            let _ = app.refresh_containers().await;
-                            needs_fetch = true;
-                        }
-                        KeyCode::Char('a') => {
-                            app.auto_scroll = !app.auto_scroll;
-                        }
-                        KeyCode::Char('J') => {
-                            app.auto_scroll = false;
-                            let logs_len = app.selected_container_logs.read().await.len();
-                            if logs_len > 0 {
-                                let i = match app.logs_state.selected() {
-                                    Some(i) => {
-                                        if i >= logs_len - 1 { logs_len - 1 } else { i + 1 }
-                                    },
-                                    None => 0,
-                                };
-                                app.logs_state.select(Some(i));
+                    if app.show_help {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                                app.show_help = false;
                             }
+                            _ => {}
                         }
-                        KeyCode::Char('K') => {
-                            app.auto_scroll = false;
-                            let logs_len = app.selected_container_logs.read().await.len();
-                            if logs_len > 0 {
-                                let i = match app.logs_state.selected() {
-                                    Some(i) => {
-                                        if i == 0 { 0 } else { i - 1 }
-                                    },
-                                    None => 0,
-                                };
-                                app.logs_state.select(Some(i));
+                    } else {
+                        match key.code {
+                            KeyCode::Char('?') => app.show_help = true,
+                            KeyCode::Char('q') | KeyCode::Esc => break,
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                app.next();
+                                last_selection_change = Instant::now();
+                                needs_fetch = true;
+                            },
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.previous();
+                                last_selection_change = Instant::now();
+                                needs_fetch = true;
+                            },
+                            KeyCode::Char('r') => {
+                                let _ = app.restart_container().await;
+                                let _ = app.refresh_containers().await;
                             }
+                            KeyCode::Char('s') => {
+                                let _ = app.stop_container().await;
+                                let _ = app.refresh_containers().await;
+                            }
+                            KeyCode::Char('t') => {
+                                let _ = app.start_container().await;
+                                let _ = app.refresh_containers().await;
+                            }
+                            KeyCode::Char('d') => {
+                                let _ = app.remove_container().await;
+                            }
+                            KeyCode::Char('f') => {
+                                app.toggle_filter();
+                                let _ = app.refresh_containers().await;
+                                needs_fetch = true;
+                            }
+                            KeyCode::Char('a') => {
+                                app.auto_scroll = !app.auto_scroll;
+                            }
+                            KeyCode::Char('J') => {
+                                app.auto_scroll = false;
+                                let logs_len = app.selected_container_logs.read().await.len();
+                                if logs_len > 0 {
+                                    let i = match app.logs_state.selected() {
+                                        Some(i) => {
+                                            if i >= logs_len - 1 { logs_len - 1 } else { i + 1 }
+                                        },
+                                        None => 0,
+                                    };
+                                    app.logs_state.select(Some(i));
+                                }
+                            }
+                            KeyCode::Char('K') => {
+                                app.auto_scroll = false;
+                                let logs_len = app.selected_container_logs.read().await.len();
+                                if logs_len > 0 {
+                                    let i = match app.logs_state.selected() {
+                                        Some(i) => {
+                                            if i == 0 { 0 } else { i - 1 }
+                                        },
+                                        None => 0,
+                                    };
+                                    app.logs_state.select(Some(i));
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }
