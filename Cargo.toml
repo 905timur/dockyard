@@ -27,6 +27,8 @@ anyhow = "1.0"
 
 # Async utilities
 futures = "0.3"
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.17"
 
 [profile.release]
 opt-level = 3

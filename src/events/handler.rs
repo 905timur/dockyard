@@ -1,0 +1,62 @@
+use crossterm::event::{self, Event, KeyEventKind};
+use ratatui::{Terminal, backend::Backend};
+use std::time::{Duration, Instant};
+use crate::app::App;
+use crate::ui::draw;
+use crate::events::key_bindings::handle_key_events;
+use crate::types::Result;
+
+pub async fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+    let mut last_container_update = Instant::now();
+    let mut last_selection_change = Instant::now();
+    let mut needs_fetch = true; 
+
+    loop {
+        // Refresh container list every 5 seconds
+        if last_container_update.elapsed() > Duration::from_secs(5) {
+            let _ = app.refresh_containers().await;
+            last_container_update = Instant::now();
+        }
+
+        // Debounced Fetch
+        if needs_fetch && last_selection_change.elapsed() > Duration::from_millis(150) {
+            if let Some(container) = app.selected_container().await {
+                app.trigger_fetch(container.id).await;
+            } else {
+                 // Clear if nothing selected
+                *app.selected_container_details.write().await = None;
+                app.selected_container_logs.write().await.clear();
+            }
+            needs_fetch = false;
+        }
+
+        // Auto-scroll logs
+        if app.auto_scroll {
+            let logs_len = app.selected_container_logs.read().await.len();
+            if logs_len > 0 {
+                app.logs_state.select(Some(logs_len - 1));
+            }
+        }
+
+        // Draw UI
+        terminal.draw(|f| {
+            let app_ref = &*app; // Re-borrow as immutable
+            // block_in_place is needed because draw accesses RwLocks which are async
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(draw(f, app_ref))
+            });
+        })?;
+
+        // Poll for events
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    if handle_key_events(key.code, app, &mut last_selection_change, &mut needs_fetch).await {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}

@@ -30,11 +30,11 @@ Show service dependencies
 
 Power User Features ⚡
 
-Real-time Log Streaming (not just historical)
+//Real-time Log Streaming (not just historical)
 
-Live tail logs in the logs view
-Color-coded log levels (ERROR, WARN, INFO)
-Auto-scroll toggle
+//Live tail logs in the logs view
+//Color-coded log levels (ERROR, WARN, INFO)
+//Auto-scroll toggle
 
 
 Network Inspection
