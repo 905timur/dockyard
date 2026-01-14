@@ -1,4 +1,8 @@
 # Dockyard ⚓
+![CI](https://github.com/905timur/dockyard/actions/workflows/ci.yml/badge.svg?branch=main)
+![Release](https://img.shields.io/github/v/release/905timur/dockyard)
+![License](https://img.shields.io/github/license/905timur/dockyard)
+![Rust](https://img.shields.io/badge/rust-1.75%2B-blue)
 
 Dockyard is a terminal-based Docker container manager built specifically for resource constrained VPS servers, written in Rust and with performance in mind. 
 It provides real-time insights into your containers with minimal overhead and an easy-on-the-eyes UI.
