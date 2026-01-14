@@ -1,1 +1,6 @@
 agents.md
+screen.png
+improvements.txt
+/target/
+**/*.rs.bk
+**/*.log
