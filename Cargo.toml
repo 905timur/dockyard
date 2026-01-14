@@ -2,9 +2,9 @@
 name = "dockyard"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Timur Gabaidulin <timur.gab@gmail.com>"]
 description = "Dockyard - A high-performance Docker container monitor with a beautiful TUI"
-license = "MIT"
+license-file = ["LICENSE-MIT", "LICENSE-APACHE"]
 keywords = ["docker", "tui", "container", "monitor", "dockyard"]
 categories = ["command-line-utilities"]
 
