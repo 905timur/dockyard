@@ -1,0 +1,4 @@
+- Fork the repo
+- Create a feature branch
+- Run `cargo check` and `cargo test`
+- Open a PR
