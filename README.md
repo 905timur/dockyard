@@ -10,14 +10,12 @@ It provides real-time insights into your containers with minimal overhead and an
 ![Dockyard TUI](https://github.com/905timur/dockyard/blob/main/screen.png)
 
 ## Perfect For
-
 * **Low-spec servers** (2–4 vCPU, 2–8 GB RAM)
 * **Production environments** where every MB counts
 * **Development servers** running multiple containers
 * **Raspberry Pi** and other ARM-based servers
 
 ## Features 
-
 - Written in Rust with async/await – no GIL, no garbage collection
 - Concurrent stats fetching – query all containers in parallel with async background workers
 - Synchronous UI rendering – zero async overhead, no thread parking, instant frame updates
@@ -26,13 +24,24 @@ It provides real-time insights into your containers with minimal overhead and an
 ## Installation 
 
 ### Prerequisites
-
 * Rust `1.70+` ([Install Rust](https://rustup.rs/))
 * Docker daemon running
 * Access to the Docker socket
 
-### Quick Start
+### Option 1: Install from Release (Recommended)
+```bash
+# Download the latest release (v0.1.2)
+wget https://github.com/905timur/dockyard/releases/download/v0.1.2/dockyard-x86_64-unknown-linux-gnu.tar.gz
 
+# Extract and install
+tar -xzf dockyard-x86_64-unknown-linux-gnu.tar.gz
+sudo mv dockyard /usr/local/bin/
+
+# Run it
+dockyard
+```
+
+### Option 2: Build from Source
 ```bash
 # Clone the repository
 git clone https://github.com/905timur/dockyard.git
@@ -42,28 +51,23 @@ cd dockyard
 cargo run --release
 ```
 
-**OR**
-
-### System-wide Install
-
+### Option 3: Install with Cargo
 ```bash
-cargo install --path .
+cargo install --git https://github.com/905timur/dockyard.git --tag v0.1.2
 dockyard
 ```
 
-### Ensure credentials are set
-
+### Ensure Docker permissions are set
 ```bash
 sudo usermod -aG docker $USER
-# Log out and log back in
+# Log out and log back in for changes to take effect
 ```
 
 ## Navigation
-
 | Key | Action |
 |-----|--------|
 | `?` | Help menu |
-| `↑`/`↓` or `j`/`k` | Navigate containers |
+| `↑↓` or `jk` | Navigate containers |
 | `i` | View resource history graphs |
 | `l` | View container logs |
 | `r` | Restart container |
