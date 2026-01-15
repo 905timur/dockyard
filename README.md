@@ -18,10 +18,10 @@ It provides real-time insights into your containers with minimal overhead and an
 
 ## Features 
 
-* Written in Rust with async/await – no GIL, no garbage collection
-* Concurrent stats fetching – query all containers in parallel
-* Non-blocking UI updates – never freezes, always responsive
-* Event-driven architecture with background workers
+- Written in Rust with async/await – no GIL, no garbage collection
+- Concurrent stats fetching – query all containers in parallel with async background workers
+- Synchronous UI rendering – zero async overhead, no thread parking, instant frame updates
+- Event-driven architecture with lock-free UI – background workers never block the terminal
 
 ## Installation 
 
