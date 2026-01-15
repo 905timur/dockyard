@@ -50,7 +50,7 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
             }
             KeyCode::Char('J') => {
                 app.auto_scroll = false;
-                let logs_len = app.selected_container_logs.read().await.len();
+                let logs_len = app.selected_container_logs.read().unwrap().len();
                 if logs_len > 0 {
                     let i = match app.logs_state.selected() {
                         Some(i) => {
@@ -63,7 +63,7 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
             }
             KeyCode::Char('K') => {
                 app.auto_scroll = false;
-                let logs_len = app.selected_container_logs.read().await.len();
+                let logs_len = app.selected_container_logs.read().unwrap().len();
                 if logs_len > 0 {
                     let i = match app.logs_state.selected() {
                         Some(i) => {

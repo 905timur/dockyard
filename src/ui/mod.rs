@@ -12,14 +12,14 @@ use crate::ui::container_list::render_container_list;
 use crate::ui::logs::render_container_logs;
 use crate::ui::help::render_help;
 
-pub async fn draw(f: &mut Frame<'_>, app: &App) {
+pub fn draw(f: &mut Frame<'_>, app: &App) {
     let area = f.area();
     let (left, right) = get_main_layout(area);
     let (top_right, bottom_right) = get_right_pane_layout(right);
 
-    render_container_details(f, left, app).await;
-    render_container_list(f, top_right, app).await;
-    render_container_logs(f, bottom_right, app).await;
+    render_container_details(f, left, app);
+    render_container_list(f, top_right, app);
+    render_container_logs(f, bottom_right, app);
 
     if app.show_help {
         render_help(f, area);

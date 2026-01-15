@@ -25,8 +25,8 @@ fn format_uptime(created: i64) -> String {
     }
 }
 
-pub async fn render_container_list(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let containers = app.containers.read().await;
+pub fn render_container_list(f: &mut Frame<'_>, area: Rect, app: &App) {
+    let containers = app.containers.read().unwrap();
     
     // Header cells - simplified for compact view if needed, but we have space
     let header_cells = ["NAME", "STATUS", "IMG", "UP"]

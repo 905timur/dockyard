@@ -20,8 +20,8 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub async fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let details_lock = app.selected_container_details.read().await;
+pub fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
+    let details_lock = app.selected_container_details.read().unwrap();
     let details_text = match details_lock.as_ref() {
         Some(text) => text.clone(),
         None => "Select a container to view details".to_string(),
@@ -43,8 +43,8 @@ pub async fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) 
     f.render_widget(paragraph, text_area);
 
     // Render Graphs if a container is selected
-    if let Some(container) = app.selected_container().await {
-        let stats_map = app.container_stats.read().await;
+    if let Some(container) = app.selected_container() {
+        let stats_map = app.container_stats.read().unwrap();
         if let Some(stats) = stats_map.get(&container.id) {
             // Split graphs area: Left CPU, Right Memory
             let (cpu_area, mem_area) = get_graphs_layout(graphs_area);

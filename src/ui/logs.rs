@@ -7,8 +7,8 @@ use ratatui::{
 };
 use crate::app::App;
 
-pub async fn render_container_logs(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let logs_lock = app.selected_container_logs.read().await;
+pub fn render_container_logs(f: &mut Frame<'_>, area: Rect, app: &App) {
+    let logs_lock = app.selected_container_logs.read().unwrap();
     
     let logs_items: Vec<ListItem> = logs_lock
         .iter()

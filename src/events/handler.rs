@@ -20,19 +20,19 @@ pub async fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut Ap
 
         // Debounced Fetch
         if needs_fetch && last_selection_change.elapsed() > Duration::from_millis(150) {
-            if let Some(container) = app.selected_container().await {
-                app.trigger_fetch(container.id).await;
+            if let Some(container) = app.selected_container() {
+                app.trigger_fetch(container.id);
             } else {
                  // Clear if nothing selected
-                *app.selected_container_details.write().await = None;
-                app.selected_container_logs.write().await.clear();
+                *app.selected_container_details.write().unwrap() = None;
+                app.selected_container_logs.write().unwrap().clear();
             }
             needs_fetch = false;
         }
 
         // Auto-scroll logs
         if app.auto_scroll {
-            let logs_len = app.selected_container_logs.read().await.len();
+            let logs_len = app.selected_container_logs.read().unwrap().len();
             if logs_len > 0 {
                 app.logs_state.select(Some(logs_len - 1));
             }
@@ -40,11 +40,7 @@ pub async fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut Ap
 
         // Draw UI
         terminal.draw(|f| {
-            let app_ref = &*app; // Re-borrow as immutable
-            // block_in_place is needed because draw accesses RwLocks which are async
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(draw(f, app_ref))
-            });
+            draw(f, app);
         })?;
 
         // Poll for events

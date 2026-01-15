@@ -1,6 +1,5 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::sync::RwLock;
 use ratatui::widgets::{TableState, ListState};
 use std::collections::HashMap;
 use bollard::models::ContainerInspectResponse;
@@ -68,8 +67,8 @@ impl App {
         if app.total_containers > 0 {
             app.table_state.select(Some(0));
             // Trigger initial fetch
-            if let Some(container) = app.selected_container().await {
-                 app.trigger_fetch(container.id).await;
+            if let Some(container) = app.selected_container() {
+                 app.trigger_fetch(container.id);
             }
         }
         
@@ -80,13 +79,14 @@ impl App {
         
         tokio::spawn(async move {
             loop {
-                let containers = containers_clone.read().await;
-                let running_containers: Vec<_> = containers
-                    .iter()
-                    .filter(|c| c.state == "running")
-                    .map(|c| c.id.clone())
-                    .collect();
-                drop(containers);
+                let running_containers: Vec<String> = {
+                    let containers = containers_clone.read().unwrap();
+                    containers
+                        .iter()
+                        .filter(|c| c.state == "running")
+                        .map(|c| c.id.clone())
+                        .collect()
+                };
                 
                 if running_containers.is_empty() {
                     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -110,31 +110,32 @@ impl App {
                 
                 let results = futures::future::join_all(stats_futures).await;
                 
-                let mut stats_map = stats_clone.write().await;
-                for (id, cpu, mem, limit) in results.into_iter().flatten() {
-                    stats_map.entry(id)
-                        .and_modify(|stats| {
-                            stats.cpu_percent = cpu;
-                            stats.memory_usage = mem;
-                            stats.memory_limit = limit;
-                            stats.cpu_history.push((cpu * 100.0) as u64);
-                            stats.memory_history.push(mem);
-                            if stats.cpu_history.len() > 100 {
-                                stats.cpu_history.remove(0);
-                            }
-                            if stats.memory_history.len() > 100 {
-                                stats.memory_history.remove(0);
-                            }
-                        })
-                        .or_insert_with(|| ContainerStats {
-                            cpu_percent: cpu,
-                            memory_usage: mem,
-                            memory_limit: limit,
-                            cpu_history: vec![(cpu * 100.0) as u64],
-                            memory_history: vec![mem],
-                        });
+                {
+                    let mut stats_map = stats_clone.write().unwrap();
+                    for (id, cpu, mem, limit) in results.into_iter().flatten() {
+                        stats_map.entry(id)
+                            .and_modify(|stats| {
+                                stats.cpu_percent = cpu;
+                                stats.memory_usage = mem;
+                                stats.memory_limit = limit;
+                                stats.cpu_history.push((cpu * 100.0) as u64);
+                                stats.memory_history.push(mem);
+                                if stats.cpu_history.len() > 100 {
+                                    stats.cpu_history.remove(0);
+                                }
+                                if stats.memory_history.len() > 100 {
+                                    stats.memory_history.remove(0);
+                                }
+                            })
+                            .or_insert_with(|| ContainerStats {
+                                cpu_percent: cpu,
+                                memory_usage: mem,
+                                memory_limit: limit,
+                                cpu_history: vec![(cpu * 100.0) as u64],
+                                memory_history: vec![mem],
+                            });
+                    }
                 }
-                drop(stats_map);
                 
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -160,7 +161,7 @@ impl App {
             }
         }
 
-        let mut containers = self.containers.write().await;
+        let mut containers = self.containers.write().unwrap();
         *containers = containers_result;
         drop(containers);
         Ok(())
@@ -200,14 +201,14 @@ impl App {
         self.table_state.select(Some(i));
     }
 
-    pub async fn selected_container(&self) -> Option<ContainerInfo> {
-        let containers = self.containers.read().await;
+    pub fn selected_container(&self) -> Option<ContainerInfo> {
+        let containers = self.containers.read().unwrap();
         self.table_state
             .selected()
             .and_then(|i| containers.get(i).cloned())
     }
 
-    pub async fn trigger_fetch(&mut self, container_id: String) {
+    pub fn trigger_fetch(&mut self, container_id: String) {
         if self.last_fetched_id.as_ref() == Some(&container_id) {
             return;
         }
@@ -216,9 +217,9 @@ impl App {
         
         // Clear previous data
         {
-            let mut details = self.selected_container_details.write().await;
+            let mut details = self.selected_container_details.write().unwrap();
             *details = None;
-            let mut logs = self.selected_container_logs.write().await;
+            let mut logs = self.selected_container_logs.write().unwrap();
             logs.clear();
         }
 
@@ -233,14 +234,14 @@ impl App {
                 Ok(info) => format_details(info),
                 Err(e) => format!("Error fetching details: {}", e),
             };
-            *details_lock.write().await = Some(details_str);
+            *details_lock.write().unwrap() = Some(details_str);
         });
 
         // Start log stream
-        self.start_log_stream(container_id).await;
+        self.start_log_stream(container_id);
     }
 
-    async fn start_log_stream(&mut self, container_id: String) {
+    fn start_log_stream(&mut self, container_id: String) {
         // Abort previous task
         if let Some(handle) = self.log_stream_task.take() {
             handle.abort();
@@ -255,7 +256,7 @@ impl App {
             while let Some(log_result) = stream.next().await {
                 match log_result {
                     Ok(log) => {
-                        let mut logs = logs_lock.write().await;
+                        let mut logs = logs_lock.write().unwrap();
                         logs.push(log.to_string());
                         // Keep last 1000 lines to prevent memory issues
                         if logs.len() > 1000 {
@@ -271,28 +272,28 @@ impl App {
     }
 
     pub async fn restart_container(&mut self) -> Result<()> {
-        if let Some(container) = self.selected_container().await {
+        if let Some(container) = self.selected_container() {
             restart_container(&self.docker, &container.id).await?;
         }
         Ok(())
     }
 
     pub async fn stop_container(&mut self) -> Result<()> {
-        if let Some(container) = self.selected_container().await {
+        if let Some(container) = self.selected_container() {
             stop_container(&self.docker, &container.id).await?;
         }
         Ok(())
     }
 
     pub async fn start_container(&mut self) -> Result<()> {
-        if let Some(container) = self.selected_container().await {
+        if let Some(container) = self.selected_container() {
             start_container(&self.docker, &container.id).await?;
         }
         Ok(())
     }
 
     pub async fn remove_container(&mut self) -> Result<()> {
-        if let Some(container) = self.selected_container().await {
+        if let Some(container) = self.selected_container() {
             remove_container(&self.docker, &container.id).await?;
             self.refresh_containers().await?;
             // Reset selection if out of bounds
