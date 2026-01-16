@@ -33,10 +33,10 @@ It provides real-time insights into your containers with minimal overhead and an
 ### Option 1: Install from Release (Recommended)
 ```bash
 # Download the latest release (v0.1.3)
-wget https://github.com/905timur/dockyard/releases/download/v0.1.3/dockyard-x86_64-unknown-linux-gnu.tar.gz
+wget https://github.com/905timur/dockyard/releases/download/v0.1.3/dockyard-v0.1.3-x86_64.tar.gz
 
 # Extract and install
-tar -xzf dockyard-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf dockyard-v0.1.3-x86_64.tar.gz
 sudo mv dockyard /usr/local/bin/
 
 # Run it
