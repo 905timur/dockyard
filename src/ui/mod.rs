@@ -12,7 +12,7 @@ use crate::ui::container_list::render_container_list;
 use crate::ui::logs::render_container_logs;
 use crate::ui::help::render_help;
 
-pub fn draw(f: &mut Frame<'_>, app: &App) {
+pub fn draw(f: &mut Frame<'_>, app: &mut App) {
     let area = f.area();
     let (left, right) = get_main_layout(area);
     let (top_right, bottom_right) = get_right_pane_layout(right);

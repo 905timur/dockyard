@@ -10,16 +10,18 @@ It provides real-time insights into your containers with minimal overhead and an
 ![Dockyard TUI](https://github.com/905timur/dockyard/blob/main/screen.png)
 
 ## Perfect For
-* **Low-spec servers** (2–4 vCPU, 2–8 GB RAM)
+* **Low-spec servers** (1–4 vCPU, 512 MB–8 GB RAM)
 * **Production environments** where every MB counts
 * **Development servers** running multiple containers
 * **Raspberry Pi** and other ARM-based servers
 
 ## Features 
 - Written in Rust with async/await – no GIL, no garbage collection
-- Concurrent stats fetching – query all containers in parallel with async background workers
+- Viewport-aware stats fetching – only queries containers visible on screen
+- Staggered API requests – spreads Docker calls evenly to prevent CPU spikes
 - Synchronous UI rendering – zero async overhead, no thread parking, instant frame updates
 - Event-driven architecture with lock-free UI – background workers never block the terminal
+- Configurable polling intervals – tune performance for your environment
 
 ## Installation 
 
@@ -30,8 +32,8 @@ It provides real-time insights into your containers with minimal overhead and an
 
 ### Option 1: Install from Release (Recommended)
 ```bash
-# Download the latest release (v0.1.2)
-wget https://github.com/905timur/dockyard/releases/download/v0.1.2/dockyard-x86_64-unknown-linux-gnu.tar.gz
+# Download the latest release (v0.1.3)
+wget https://github.com/905timur/dockyard/releases/download/v0.1.3/dockyard-x86_64-unknown-linux-gnu.tar.gz
 
 # Extract and install
 tar -xzf dockyard-x86_64-unknown-linux-gnu.tar.gz
@@ -53,7 +55,7 @@ cargo run --release
 
 ### Option 3: Install with Cargo
 ```bash
-cargo install --git https://github.com/905timur/dockyard.git --tag v0.1.2
+cargo install --git https://github.com/905timur/dockyard.git --tag v0.1.3
 dockyard
 ```
 
@@ -61,6 +63,15 @@ dockyard
 ```bash
 sudo usermod -aG docker $USER
 # Log out and log back in for changes to take effect
+```
+
+## Usage
+```bash
+# Run with default settings (3 second stats interval)
+dockyard
+
+# Adjust stats polling interval (1-10 seconds)
+dockyard --stats-interval 5
 ```
 
 ## Navigation

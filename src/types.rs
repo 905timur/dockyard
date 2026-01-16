@@ -19,6 +19,7 @@ pub struct ContainerStats {
     pub memory_limit: u64,
     pub cpu_history: Vec<u64>,
     pub memory_history: Vec<u64>,
+    pub last_updated: i64,
 }
 
 #[derive(thiserror::Error, Debug)]

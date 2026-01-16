@@ -7,17 +7,10 @@ use crate::events::key_bindings::handle_key_events;
 use crate::types::Result;
 
 pub async fn run_event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
-    let mut last_container_update = Instant::now();
     let mut last_selection_change = Instant::now();
     let mut needs_fetch = true; 
 
     loop {
-        // Refresh container list every 5 seconds
-        if last_container_update.elapsed() > Duration::from_secs(5) {
-            let _ = app.refresh_containers().await;
-            last_container_update = Instant::now();
-        }
-
         // Debounced Fetch
         if needs_fetch && last_selection_change.elapsed() > Duration::from_millis(150) {
             if let Some(container) = app.selected_container() {

@@ -12,12 +12,24 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use std::env;
 
 use crate::app::App;
 use crate::events::handler::run_event_loop;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse args
+    let args: Vec<String> = env::args().collect();
+    let mut stats_interval = 3;
+    for i in 0..args.len() {
+        if args[i] == "--stats-interval" && i + 1 < args.len() {
+             if let Ok(val) = args[i+1].parse::<u64>() {
+                 stats_interval = val.max(1).min(10); // Clamp to 1-10s range per requirements
+             }
+        }
+    }
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -26,7 +38,7 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Initialize app
-    let mut app = App::new().await?;
+    let mut app = App::new(stats_interval).await?;
 
     // Run event loop
     let res = run_event_loop(&mut terminal, &mut app).await;
