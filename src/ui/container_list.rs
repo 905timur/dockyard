@@ -107,13 +107,19 @@ pub fn render_container_list(f: &mut Frame<'_>, area: Rect, app: &mut App) {
         Constraint::Percentage(30),
     ];
 
+    let border_style = if app.focus == crate::app::Focus::ContainerList {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Magenta)
+    };
+
     let table = Table::new(rows, widths)
         .header(header)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" Containers ({}) ", app.total_containers))
-                .border_style(Style::default().fg(Color::Magenta))
+                .border_style(border_style)
         )
         .highlight_style(
             Style::default()

@@ -74,6 +74,14 @@ pub async fn restart_container(client: &DockerClient, id: &str) -> Result<()> {
     client.inner.restart_container(id, None).await.map_err(Into::into)
 }
 
+pub async fn pause_container(client: &DockerClient, id: &str) -> Result<()> {
+    client.inner.pause_container(id).await.map_err(Into::into)
+}
+
+pub async fn unpause_container(client: &DockerClient, id: &str) -> Result<()> {
+    client.inner.unpause_container(id).await.map_err(Into::into)
+}
+
 pub async fn remove_container(client: &DockerClient, id: &str) -> Result<()> {
     let options = RemoveContainerOptions {
         force: true,

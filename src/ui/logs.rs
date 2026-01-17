@@ -33,12 +33,18 @@ pub fn render_container_logs(f: &mut Frame<'_>, area: Rect, app: &App) {
         " Logs (Live - Manual Scroll) "
     };
 
+    let border_style = if app.focus == crate::app::Focus::Logs {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Yellow)
+    };
+
     let logs_list = List::new(logs_items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(Style::default().fg(Color::Yellow))
+                .border_style(border_style)
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 

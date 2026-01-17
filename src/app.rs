@@ -9,10 +9,31 @@ use tokio::sync::Semaphore;
 use chrono::Utc;
 
 use crate::docker::client::DockerClient;
-use crate::types::{ContainerInfo, ContainerStats, Result};
-use crate::docker::containers::{list_containers, start_container, stop_container, restart_container, remove_container, inspect_container};
+use crate::types::{ContainerInfo, ContainerStats, ImageInfo, Result};
+use crate::docker::containers::{list_containers, start_container, stop_container, restart_container, remove_container, inspect_container, pause_container, unpause_container};
+use crate::docker::images::{list_images, pull_image, remove_image, inspect_image, prune_images};
 use crate::docker::logs::stream_logs;
 use crate::docker::stats::fetch_container_stats;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    ContainerList,
+    Logs,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum View {
+    Containers,
+    Images,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SortOrder {
+    CreatedDesc,
+    CreatedAsc,
+    SizeDesc,
+    SizeAsc,
+}
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct ViewportState {
@@ -29,6 +50,23 @@ pub struct App {
     pub stats_interval: u64,
     pub show_all: Arc<AtomicBool>,
     
+    // Image State
+    pub images: Arc<RwLock<Vec<ImageInfo>>>,
+    pub table_state_images: TableState,
+    pub current_view: View,
+    pub show_dangling: Arc<AtomicBool>,
+    pub total_images: usize,
+    pub total_image_size: u64,
+    pub image_sort: SortOrder,
+    pub selected_image_details: Arc<RwLock<Option<String>>>,
+    
+    // Pull Image State
+    pub show_pull_dialog: bool,
+    pub pull_input: String,
+    pub is_pulling: Arc<AtomicBool>,
+    pub pull_progress: Arc<RwLock<Vec<String>>>, // Store recent progress lines
+    pub show_delete_confirm: bool, // For image deletion
+
     // Selection state
     pub selected_container_details: Arc<RwLock<Option<String>>>,
     pub selected_container_logs: Arc<RwLock<Vec<String>>>,
@@ -47,6 +85,8 @@ pub struct App {
 
     // UI State
     pub show_help: bool,
+    pub should_exec: Option<String>,
+    pub focus: Focus,
 }
 
 impl App {
@@ -64,6 +104,22 @@ impl App {
             viewport_state: viewport_state.clone(),
             stats_interval,
             show_all: Arc::new(AtomicBool::new(true)),
+            
+            // Image init
+            images: Arc::new(RwLock::new(Vec::new())),
+            table_state_images: TableState::default(),
+            current_view: View::Containers,
+            show_dangling: Arc::new(AtomicBool::new(false)),
+            total_images: 0,
+            total_image_size: 0,
+            image_sort: SortOrder::CreatedDesc,
+            selected_image_details: Arc::new(RwLock::new(None)),
+            show_pull_dialog: false,
+            pull_input: String::new(),
+            is_pulling: Arc::new(AtomicBool::new(false)),
+            pull_progress: Arc::new(RwLock::new(Vec::new())),
+            show_delete_confirm: false,
+
             selected_container_details: Arc::new(RwLock::new(None)),
             selected_container_logs: Arc::new(RwLock::new(Vec::new())),
             last_fetched_id: None,
@@ -75,9 +131,12 @@ impl App {
             stopped_count: 0,
             paused_count: 0,
             show_help: false,
+            should_exec: None,
+            focus: Focus::ContainerList,
         };
         
         app.refresh_containers().await?;
+        app.refresh_images().await?;
         if app.total_containers > 0 {
             app.table_state.select(Some(0));
             // Trigger initial fetch
@@ -102,6 +161,27 @@ impl App {
                     }
                     Err(e) => {
                         eprintln!("Failed to refresh containers: {}", e);
+                    }
+                }
+            }
+        });
+
+        // --- Background Task 1.5: List Images (every 30s) ---
+        let docker_clone_images = app.docker.clone();
+        let images_clone = app.images.clone();
+        let show_dangling_clone = app.show_dangling.clone();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                let show_dangling = show_dangling_clone.load(Ordering::Relaxed);
+                match list_images(&docker_clone_images, show_dangling).await {
+                    Ok(images_result) => {
+                        let mut images = images_clone.write().unwrap();
+                        *images = images_result;
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to refresh images: {}", e);
                     }
                 }
             }
@@ -380,6 +460,174 @@ impl App {
         Ok(())
     }
 
+    pub async fn pause_container(&mut self) -> Result<()> {
+        if let Some(container) = self.selected_container() {
+            if container.state == "running" {
+                pause_container(&self.docker, &container.id).await?;
+                self.refresh_containers().await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn unpause_container(&mut self) -> Result<()> {
+        if let Some(container) = self.selected_container() {
+            if container.state == "paused" {
+                unpause_container(&self.docker, &container.id).await?;
+                self.refresh_containers().await?;
+            }
+        }
+        Ok(())
+    }
+
+    // --- Image Methods ---
+
+    pub async fn refresh_images(&mut self) -> Result<()> {
+        let show_dangling = self.show_dangling.load(Ordering::Relaxed);
+        let images_result = list_images(&self.docker, show_dangling).await?;
+        
+        self.total_images = images_result.len();
+        self.total_image_size = images_result.iter().map(|i| i.size as u64).sum();
+
+        let mut images = self.images.write().unwrap();
+        *images = images_result;
+        
+        match self.image_sort {
+            SortOrder::CreatedDesc => images.sort_by(|a, b| b.created.cmp(&a.created)),
+            SortOrder::CreatedAsc => images.sort_by(|a, b| a.created.cmp(&b.created)),
+            SortOrder::SizeDesc => images.sort_by(|a, b| b.size.cmp(&a.size)),
+            SortOrder::SizeAsc => images.sort_by(|a, b| a.size.cmp(&b.size)),
+        }
+        
+        drop(images);
+        Ok(())
+    }
+
+    pub fn cycle_sort(&mut self) {
+        self.image_sort = match self.image_sort {
+            SortOrder::CreatedDesc => SortOrder::CreatedAsc,
+            SortOrder::CreatedAsc => SortOrder::SizeDesc,
+            SortOrder::SizeDesc => SortOrder::SizeAsc,
+            SortOrder::SizeAsc => SortOrder::CreatedDesc,
+        };
+    }
+
+    pub fn next_image(&mut self) {
+        if self.total_images == 0 {
+            return;
+        }
+        let i = match self.table_state_images.selected() {
+            Some(i) => {
+                if i >= self.total_images - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.table_state_images.select(Some(i));
+    }
+
+    pub fn previous_image(&mut self) {
+        if self.total_images == 0 {
+            return;
+        }
+        let i = match self.table_state_images.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.total_images - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.table_state_images.select(Some(i));
+    }
+
+    pub fn selected_image(&self) -> Option<ImageInfo> {
+        let images = self.images.read().unwrap();
+        self.table_state_images
+            .selected()
+            .and_then(|i| images.get(i).cloned())
+    }
+
+    pub fn trigger_image_details(&mut self) {
+        if let Some(image) = self.selected_image() {
+            let docker = self.docker.clone();
+            let details_lock = self.selected_image_details.clone();
+            let id = image.id.clone();
+            
+            tokio::spawn(async move {
+                let details_res = inspect_image(&docker, &id).await;
+                let details_str = match details_res {
+                    Ok(info) => format_image_details(info),
+                    Err(e) => format!("Error fetching image details: {}", e),
+                };
+                *details_lock.write().unwrap() = Some(details_str);
+            });
+        }
+    }
+
+    pub async fn remove_current_image(&mut self, force: bool) -> Result<()> {
+        if let Some(image) = self.selected_image() {
+            remove_image(&self.docker, &image.id, force).await?;
+            self.refresh_images().await?;
+            if self.total_images > 0 && self.table_state_images.selected().unwrap_or(0) >= self.total_images {
+                self.table_state_images.select(Some(self.total_images - 1));
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn prune_images(&mut self) -> Result<()> {
+        prune_images(&self.docker).await?;
+        self.refresh_images().await?;
+        Ok(())
+    }
+
+    pub fn start_pull_image(&mut self, image_name: String) {
+        self.is_pulling.store(true, Ordering::Relaxed);
+        self.pull_progress.write().unwrap().clear();
+        self.show_pull_dialog = false;
+        
+        let docker = self.docker.clone();
+        let is_pulling = self.is_pulling.clone();
+        let pull_progress = self.pull_progress.clone();
+        
+        tokio::spawn(async move {
+            let mut stream = pull_image(&docker, image_name.clone());
+            
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(info) => {
+                        let mut progress = pull_progress.write().unwrap();
+                        let status = info.status.unwrap_or_default();
+                        let progress_detail = info.progress.unwrap_or_default();
+                        let line = if !progress_detail.is_empty() {
+                            format!("{}: {}", status, progress_detail)
+                        } else {
+                            status
+                        };
+                        
+                        // Keep only last 10 lines
+                        if progress.len() >= 10 {
+                            progress.remove(0);
+                        }
+                        progress.push(line);
+                    }
+                    Err(e) => {
+                        let mut progress = pull_progress.write().unwrap();
+                         progress.push(format!("Error: {}", e));
+                    }
+                }
+            }
+            
+            is_pulling.store(false, Ordering::Relaxed);
+        });
+    }
+
     pub fn toggle_filter(&mut self) {
         let current = self.show_all.load(Ordering::Relaxed);
         self.show_all.store(!current, Ordering::Relaxed);
@@ -448,6 +696,52 @@ fn format_details(info: ContainerInspectResponse) -> String {
 
     // Created
     s.push_str(&format!("Created: {}\n", info.created.unwrap_or_default()));
+
+    s
+}
+
+fn format_image_details(info: bollard::models::ImageInspect) -> String {
+    let mut s = String::new();
+
+    s.push_str(&format!("ID: {}\n", info.id.as_deref().unwrap_or("").trim_start_matches("sha256:")));
+    s.push_str(&format!("Created: {}\n", info.created.as_deref().unwrap_or("")));
+    s.push_str(&format!("Docker Version: {}\n", info.docker_version.as_deref().unwrap_or("")));
+    s.push_str(&format!("Architecture: {}\n", info.architecture.as_deref().unwrap_or("")));
+    s.push_str(&format!("OS: {}\n", info.os.as_deref().unwrap_or("")));
+    s.push_str(&format!("Size: {}\n", format_bytes(info.size.unwrap_or(0) as u64)));
+    s.push('\n');
+
+    if let Some(tags) = info.repo_tags {
+        s.push_str("TAGS:\n");
+        for tag in tags {
+            s.push_str(&format!("  {}\n", tag));
+        }
+        s.push('\n');
+    }
+
+    if let Some(config) = info.config {
+        if let Some(env) = config.env {
+            s.push_str("ENV:\n");
+            for e in env {
+                s.push_str(&format!("  {}\n", e));
+            }
+            s.push('\n');
+        }
+        if let Some(labels) = config.labels {
+            s.push_str("LABELS:\n");
+            for (k, v) in labels {
+                s.push_str(&format!("  {}={}\n", k, v));
+            }
+            s.push('\n');
+        }
+        if let Some(ports) = config.exposed_ports {
+            s.push_str("EXPOSED PORTS:\n");
+            for (k, _) in ports {
+                s.push_str(&format!("  {}\n", k));
+            }
+            s.push('\n');
+        }
+    }
 
     s
 }

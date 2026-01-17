@@ -13,6 +13,14 @@ pub struct ContainerInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageInfo {
+    pub id: String,
+    pub repo_tags: Vec<String>,
+    pub size: i64,
+    pub created: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerStats {
     pub cpu_percent: f64,
     pub memory_usage: u64,

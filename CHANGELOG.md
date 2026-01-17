@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.2.0
+
+### Added
+- **Image Management**: New image list view accessible via `Tab` key
+  - Displays repository, tag, image ID, size, and creation date
+
+  - Auto-refreshes every 30 seconds
+
+  - Sort images by creation date or size (ascending/descending) using `s` key
+
+  - Filter dangling images using `f` key
+
+- **Pull Images**: Press `p` in image view to pull new images
+  - Modal dialog for entering image name (e.g., `nginx:latest`)
+
+  - Real-time progress display during pull operations
+
+  - Background task processing to prevent UI freezing
+
+- **Remove Images**: Delete images with `d` key (normal) or `D` key (forced removal)
+
+- **Image Details**: Press `Enter` on selected image to view full details
+  - Shows ID, tags, architecture, OS, size, environment variables, labels, and exposed ports
+
+  - Close with `Esc` key
+
+- **Container Pause/Unpause**: Pause running containers with `p` key, unpause with `u` key
+  - Visual feedback shows paused state with `‖` indicator in yellow
+
+  - Automatic state validation and list refresh
+
+- **Interactive Shell Access**: Press `e` to launch interactive shell in running containers
+  - Suspends TUI and launches `docker exec -it` with full TTY support
+
+  - Falls back from `/bin/bash` to `/bin/sh` if needed
+
+  - Restores TUI automatically on shell exit
+
+- **Status Bar**: Bottom bar displays available keybindings for current view
+
+### Changed
+- Restructured app to support multiple views (Containers/Images) with view-specific keybindings
+
+- Rewrote key handling system to support modals and context-sensitive shortcuts
+
+- Updated event loop to handle view-specific logic and shell suspension/restoration
+
+### Technical
+- Added `ImageInfo` struct in `src/types.rs`
+
+- Created `src/docker/images.rs` for image API operations
+
+- Created `src/docker/exec.rs` for interactive shell execution
+
+- Added `src/ui/image_list.rs` and `src/ui/image_details.rs` UI components
+
+- Enhanced `src/app.rs` with image state management and background refresh tasks
+
 ## v0.1.3
 
 ### Changed
