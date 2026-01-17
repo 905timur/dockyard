@@ -6,7 +6,7 @@ use ratatui::{
     layout::Constraint,
 };
 use chrono::{DateTime, Utc};
-use crate::app::App;
+use crate::app::{App, SortOrder};
 
 fn format_bytes(bytes: u64) -> String {
     const GB: u64 = 1024 * 1024 * 1024;
@@ -39,9 +39,25 @@ fn format_time(timestamp: i64) -> String {
 pub fn render_image_list(f: &mut Frame<'_>, area: Rect, app: &mut App) {
     let images = app.images.read().unwrap();
     
-    let header_cells = ["REPOSITORY", "TAG", "IMAGE ID", "SIZE", "CREATED"]
+    // Prepare Headers with Sort Indicator
+    let mut headers = vec![
+        "REPOSITORY".to_string(), 
+        "TAG".to_string(), 
+        "IMAGE ID".to_string(), 
+        "SIZE".to_string(), 
+        "CREATED".to_string()
+    ];
+
+    match app.image_sort {
+        SortOrder::SizeDesc => headers[3].push_str(" ▼"),
+        SortOrder::SizeAsc => headers[3].push_str(" ▲"),
+        SortOrder::CreatedDesc => headers[4].push_str(" ▼"),
+        SortOrder::CreatedAsc => headers[4].push_str(" ▲"),
+    }
+
+    let header_cells = headers
         .iter()
-        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Black).bg(Color::Cyan).bold()));
+        .map(|h| Cell::from(h.as_str()).style(Style::default().fg(Color::Black).bg(Color::Cyan).bold()));
     let header = Row::new(header_cells).height(1);
 
     let rows = images.iter().map(|i| {
@@ -76,12 +92,18 @@ pub fn render_image_list(f: &mut Frame<'_>, area: Rect, app: &mut App) {
         Constraint::Percentage(20),
     ];
 
+    let title_text = format!(" Images ({}) - Space: {} {} ", 
+        app.total_images, 
+        format_bytes(app.total_image_size),
+        if app.show_dangling.load(std::sync::atomic::Ordering::Relaxed) { "[ALL]" } else { "[Hide Dangling]" }
+    );
+
     let table = Table::new(rows, widths)
         .header(header)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Images ({}) - Space: {} ", app.total_images, format_bytes(app.total_image_size)))
+                .title(title_text)
                 .border_style(Style::default().fg(Color::Magenta))
         )
         .highlight_style(
