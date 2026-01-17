@@ -26,14 +26,22 @@ pub fn render_help(f: &mut Frame<'_>, area: Rect) {
         .split(popup_layout[1])[1];
 
     let help_text = vec![
+        Line::from("        dockyard        "),
+        Line::from("         v0.2.0         "),
+        Line::from(""),
         Line::from("Navigation:"),
-        Line::from("  ↑/↓ or j/k: Select container"),
+        Line::from("  ↑/↓ or j/k: Navigate (List/Logs)"),
+        Line::from("  Tab: Toggle Focus (List/Logs)"),
+        Line::from("  Shift+Tab / v: Switch View (Containers/Images)"),
         Line::from("  Esc or q: Close help / Quit"),
         Line::from(""),
         Line::from("Actions:"),
         Line::from("  s: Stop container"),
         Line::from("  t: Start container"),
         Line::from("  r: Restart container"),
+        Line::from("  p: Pause container"),
+        Line::from("  u: Unpause container"),
+        Line::from("  e: Exec shell"),
         Line::from("  d: Remove container"),
         Line::from("  f: Toggle filter (All/Running)"),
         Line::from("  a: Toggle auto-scroll logs"),
