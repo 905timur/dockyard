@@ -14,7 +14,7 @@ use crate::ui::container_list::render_container_list;
 use crate::ui::logs::render_container_logs;
 use crate::ui::help::render_help;
 use crate::ui::image_list::render_image_list;
-use crate::ui::image_details::{render_image_details, render_pull_dialog};
+use crate::ui::image_details::{render_image_details, render_pull_dialog, render_image_context, render_delete_confirm};
 
 pub fn draw(f: &mut Frame<'_>, app: &mut App) {
     let area = f.area();
@@ -41,9 +41,16 @@ pub fn draw(f: &mut Frame<'_>, app: &mut App) {
             render_container_logs(f, bottom_right, app);
         },
         View::Images => {
-             render_image_list(f, main_area, app);
-             render_image_details(f, main_area, app);
+             let (left, right) = get_main_layout(main_area);
+             let (top_right, bottom_right) = get_right_pane_layout(right);
+             
+             render_image_details(f, left, app);
+             render_image_list(f, top_right, app);
+             render_image_context(f, bottom_right, app);
+             
+             // Modals
              render_pull_dialog(f, main_area, app);
+             render_delete_confirm(f, main_area, app);
         }
     }
     

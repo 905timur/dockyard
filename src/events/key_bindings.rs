@@ -24,7 +24,23 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
         return false;
     }
 
-    // 2. Handle Help
+    // 2. Handle Delete Confirmation
+    if app.show_delete_confirm {
+        match key {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                let force = app.pending_delete_force;
+                let _ = app.remove_current_image(force).await;
+                app.show_delete_confirm = false;
+            }
+            KeyCode::Esc | KeyCode::Char('n') => {
+                app.show_delete_confirm = false;
+            }
+            _ => {}
+        }
+        return false;
+    }
+
+    // 3. Handle Help
     if app.show_help {
         match key {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
@@ -35,36 +51,22 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
         return false;
     }
 
-    // 3. Handle Image Details (Modal)
-    {
-        let details = app.selected_image_details.read().unwrap();
-        if details.is_some() {
-            drop(details);
-            match key {
-                KeyCode::Esc | KeyCode::Enter => {
-                    *app.selected_image_details.write().unwrap() = None;
-                }
-                _ => {}
-            }
-            return false;
-        }
-    }
-
     // 4. Global Keys
     match key {
         KeyCode::Char('?') => {
             app.show_help = true;
             return false;
         }
-        KeyCode::BackTab | KeyCode::Char('v') => {
-            app.current_view = match app.current_view {
-                View::Containers => View::Images,
-                View::Images => View::Containers,
-            };
-            *needs_fetch = true;
+        KeyCode::Char('q') => return true,
+        KeyCode::Char('i') => {
+            if app.current_view != View::Images {
+                app.current_view = View::Images;
+                *needs_fetch = true;
+                // Trigger details fetch for initial selection
+                app.trigger_image_details();
+            }
             return false;
         }
-        KeyCode::Char('q') => return true,
         _ => {}
     }
 
@@ -191,23 +193,32 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
         View::Images => {
             match key {
                 KeyCode::Esc => return true,
+                KeyCode::Tab => {
+                     // Switch back to containers view
+                     app.current_view = View::Containers;
+                     *needs_fetch = true;
+                },
                 KeyCode::Down | KeyCode::Char('j') => {
                     app.next_image();
+                    app.trigger_image_details();
                 },
                 KeyCode::Up | KeyCode::Char('k') => {
                     app.previous_image();
+                    app.trigger_image_details();
                 },
                 KeyCode::Char('p') => {
                     app.show_pull_dialog = true;
                     app.pull_input.clear();
                 },
                 KeyCode::Char('d') => {
-                     let _ = app.remove_current_image(false).await;
+                     app.show_delete_confirm = true;
+                     app.pending_delete_force = false;
                 },
                 KeyCode::Char('D') => {
-                    let _ = app.remove_current_image(true).await;
+                     app.show_delete_confirm = true;
+                     app.pending_delete_force = true;
                 },
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Char(' ') => {
                     app.trigger_image_details();
                 },
                 KeyCode::Char('f') => {

@@ -66,6 +66,7 @@ pub struct App {
     pub is_pulling: Arc<AtomicBool>,
     pub pull_progress: Arc<RwLock<Vec<String>>>, // Store recent progress lines
     pub show_delete_confirm: bool, // For image deletion
+    pub pending_delete_force: bool,
 
     // Selection state
     pub selected_container_details: Arc<RwLock<Option<String>>>,
@@ -119,6 +120,7 @@ impl App {
             is_pulling: Arc::new(AtomicBool::new(false)),
             pull_progress: Arc::new(RwLock::new(Vec::new())),
             show_delete_confirm: false,
+            pending_delete_force: false,
 
             selected_container_details: Arc::new(RwLock::new(None)),
             selected_container_logs: Arc::new(RwLock::new(Vec::new())),
