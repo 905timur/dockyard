@@ -56,8 +56,8 @@ pub fn draw(f: &mut Frame<'_>, app: &mut App) {
     
     // Render Status Bar
     let status_text = match app.current_view {
-        View::Containers => " Tab: Images | ?: Help | q: Quit | ↑/↓: Select | s: Stop | t: Start | r: Restart | d: Remove",
-        View::Images => " Tab: Containers | ?: Help | q: Quit | ↑/↓: Select | p: Pull | d: Remove | Enter: Details",
+        View::Containers => " Shift+Tab/v: Images | ?: Help | q: Quit | ↑/↓: Select | s: Stop | t: Start | r: Restart | d: Remove",
+        View::Images => " Shift+Tab/v: Containers | ?: Help | q: Quit | ↑/↓: Select | p: Pull | d: Remove | Enter: Details",
     };
     let status_bar = ratatui::widgets::Paragraph::new(status_text)
         .style(ratatui::style::Style::default().bg(ratatui::style::Color::Blue).fg(ratatui::style::Color::White));

@@ -58,13 +58,15 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
             return false;
         }
         KeyCode::Char('q') => return true,
-        KeyCode::Char('i') => {
-            if app.current_view != View::Images {
+        KeyCode::BackTab | KeyCode::Char('v') => {
+            if app.current_view == View::Containers {
                 app.current_view = View::Images;
-                *needs_fetch = true;
-                // Trigger details fetch for initial selection
+                // Trigger details fetch for initial selection if switching to images
                 app.trigger_image_details();
+            } else {
+                app.current_view = View::Containers;
             }
+            *needs_fetch = true;
             return false;
         }
         _ => {}
@@ -193,11 +195,6 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
         View::Images => {
             match key {
                 KeyCode::Esc => return true,
-                KeyCode::Tab => {
-                     // Switch back to containers view
-                     app.current_view = View::Containers;
-                     *needs_fetch = true;
-                },
                 KeyCode::Down | KeyCode::Char('j') => {
                     app.next_image();
                     app.trigger_image_details();

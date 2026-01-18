@@ -1,7 +1,0 @@
-- [ ] Read `src/README.md` and `Cargo.toml` to understand current documentation and project scope
-- [ ] Explore the codebase to identify implemented features
-    - [ ] Check `src/docker/` for backend capabilities
-    - [ ] Check `src/ui/` for frontend features
-    - [ ] Check `src/events/key_bindings.rs` for user controls
-- [ ] Compare findings with current README
-- [ ] Draft updates for README
