@@ -1,6 +1,6 @@
 [package]
 name = "dockyard"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Timur Gabaidulin <timur.gab@gmail.com>"]
 description = "Dockyard - A high-performance Docker container manager with a beautiful TUI"

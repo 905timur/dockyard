@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0
+## v0.2.1
 
 ### Added
 - **Image Management**: New image list view accessible via `Tab` key
