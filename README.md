@@ -145,6 +145,18 @@ Select an image and press `d` to remove it (you'll get a confirmation prompt). I
 - `■` (red) – Stopped
 - `‖` (yellow) – Paused
 
+### Health Monitoring
+Dockyard monitors container health checks for running containers. Docker health checks are periodic tests that verify container functionality and can be configured in Dockerfiles using the `HEALTHCHECK` instruction.
+
+Health status indicators:
+- `✓ healthy` (green) – Health check is passing
+- `✗ unhealthy` (red) – Health check is failing
+- `⚠ starting` (yellow) – Health check is initializing
+- `-` (gray) – No health check configured
+- `✗ failing(n)` (red) – Health check failing with n consecutive failures
+
+The container list title shows a health summary with counts of healthy (✓), starting (⚠), and unhealthy (✗) containers across all running instances.
+
 ### Visual Feedback
 - Sort indicators (`▲`/`▼`) appear in table headers showing current sort direction
 - Stats marked as `(stale)` are older than 10 seconds
