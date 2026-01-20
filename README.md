@@ -79,6 +79,8 @@ dockyard --stats-interval 5
 ## Quick Start Guide
 
 ### Managing Containers
+Use the `Tab` key to switch between container and image views.
+
 When you first launch Dockyard, you'll see your container list. Use `j`/`k` or arrow keys to navigate up and down. The interface shows you each container's name, image, status, ports, and real-time CPU/memory usage.
 
 Press `Enter` on any container to see detailed information in the left pane, including environment variables, volumes, networks, and labels. Press `l` to stream logs in real-time, or `e` to drop into an interactive shell inside the container (Dockyard will suspend the TUI and hand control to your shell, then restore everything when you exit).
@@ -86,7 +88,7 @@ Press `Enter` on any container to see detailed information in the left pane, inc
 You can control containers with `s` (stop), `t` (start), `r` (restart), `p` (pause), `u` (unpause), and `d` (force remove). Press `f` to toggle between viewing all containers or just running ones.
 
 ### Managing Images
-Press `Tab` to switch to the image view. Here you'll see all Docker images on your system with their repository names, tags, IDs, sizes, and creation dates. The list auto-refreshes every 30 seconds.
+Press `Shift+Tab` to switch to the image view. Here you'll see all Docker images on your system with their repository names, tags, IDs, sizes, and creation dates. The list auto-refreshes every 30 seconds.
 
 Navigate with `j`/`k` or arrow keys, then press `Enter` or `Space` to inspect any image's full details in the left pane. You can sort images by pressing `s` (cycles through creation date ascending/descending and size ascending/descending) or filter dangling images with `f`.
 
@@ -175,9 +177,6 @@ This reduces how often Dockyard polls Docker for container stats.
 
 ### Container Shell Not Working
 The interactive shell feature (`e` key) requires that containers have either `/bin/bash` or `/bin/sh` available. Some minimal container images might not include these shells.
-
-## Contributing
-Contributions are welcome! Check out the [AGENTS.md](AGENTS.md) file for development guidelines and project architecture details.
 
 ## License
 Dockyard is dual-licensed under MIT and Apache 2.0.
