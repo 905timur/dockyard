@@ -3,6 +3,17 @@ use crate::app::{App, View, Focus};
 use std::time::Instant;
 
 pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_change: &mut Instant, needs_fetch: &mut bool) -> bool {
+    // 0. Handle Health Log Dialog
+    if app.show_health_log_dialog {
+        match key {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('E') => {
+                app.show_health_log_dialog = false;
+            }
+            _ => {}
+        }
+        return false;
+    }
+
     // 1. Handle Pull Dialog (Input)
     if app.show_pull_dialog {
         match key {
@@ -149,6 +160,28 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
                     if let Some(container) = app.selected_container() {
                         if container.state.to_lowercase() == "running" {
                             app.should_exec = Some(container.id);
+                        }
+                    }
+                }
+                KeyCode::Char('h') => {
+                    app.toggle_health_filter();
+                    *needs_fetch = true;
+                }
+                KeyCode::Char('H') => {
+                    app.cycle_container_sort();
+                    *needs_fetch = true;
+                }
+                KeyCode::Char('E') => {
+                    if let Some(c) = app.selected_container() {
+                        let health = app.container_health.read().unwrap();
+                        if let Some(h) = health.get(&c.id) {
+                            if let Some(output) = &h.last_check_output {
+                                app.health_log_content = output.clone();
+                                app.show_health_log_dialog = true;
+                            } else {
+                                app.health_log_content = "No output available.".to_string();
+                                app.show_health_log_dialog = true;
+                            }
                         }
                     }
                 }

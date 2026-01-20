@@ -9,8 +9,9 @@ use tokio::sync::Semaphore;
 use chrono::Utc;
 
 use crate::docker::client::DockerClient;
-use crate::types::{ContainerInfo, ContainerStats, ImageInfo, Result};
+use crate::types::{ContainerInfo, ContainerStats, ImageInfo, Result, ContainerHealth, HealthStatus};
 use crate::docker::containers::{list_containers, start_container, stop_container, restart_container, remove_container, inspect_container, pause_container, unpause_container};
+use crate::docker::health::{fetch_health_info, parse_health_status_from_string};
 use crate::docker::images::{list_images, pull_image, remove_image, inspect_image, prune_images};
 use crate::docker::logs::stream_logs;
 use crate::docker::stats::fetch_container_stats;
@@ -33,6 +34,15 @@ pub enum SortOrder {
     CreatedAsc,
     SizeDesc,
     SizeAsc,
+    HealthDesc, // Unhealthy first
+    HealthAsc,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HealthFilter {
+    All,
+    Unhealthy,
+    Healthy,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -44,11 +54,15 @@ pub struct ViewportState {
 pub struct App {
     pub docker: DockerClient,
     pub containers: Arc<RwLock<Vec<ContainerInfo>>>,
+    pub filtered_containers: Vec<ContainerInfo>, // Cache for UI
     pub container_stats: Arc<RwLock<HashMap<String, ContainerStats>>>,
+    pub container_health: Arc<RwLock<HashMap<String, ContainerHealth>>>,
     pub table_state: TableState,
     pub viewport_state: Arc<RwLock<ViewportState>>,
     pub stats_interval: u64,
     pub show_all: Arc<AtomicBool>,
+    pub health_filter: HealthFilter,
+    pub container_sort: SortOrder,
     
     // Image State
     pub images: Arc<RwLock<Vec<ImageInfo>>>,
@@ -64,6 +78,8 @@ pub struct App {
     pub show_pull_dialog: bool,
     pub pull_input: String,
     pub is_pulling: Arc<AtomicBool>,
+    pub show_health_log_dialog: bool,
+    pub health_log_content: String,
     pub pull_progress: Arc<RwLock<Vec<String>>>, // Store recent progress lines
     pub show_delete_confirm: bool, // For image deletion
     pub pending_delete_force: bool,
@@ -95,16 +111,21 @@ impl App {
         let docker = DockerClient::new()?;
         let containers = Arc::new(RwLock::new(Vec::new()));
         let container_stats = Arc::new(RwLock::new(HashMap::new()));
+        let container_health = Arc::new(RwLock::new(HashMap::new()));
         let viewport_state = Arc::new(RwLock::new(ViewportState::default()));
         
         let mut app = Self {
             docker,
             containers: containers.clone(),
+            filtered_containers: Vec::new(),
             container_stats: container_stats.clone(),
+            container_health: container_health.clone(),
             table_state: TableState::default(),
             viewport_state: viewport_state.clone(),
             stats_interval,
             show_all: Arc::new(AtomicBool::new(true)),
+            health_filter: HealthFilter::All,
+            container_sort: SortOrder::CreatedDesc,
             
             // Image init
             images: Arc::new(RwLock::new(Vec::new())),
@@ -118,6 +139,8 @@ impl App {
             show_pull_dialog: false,
             pull_input: String::new(),
             is_pulling: Arc::new(AtomicBool::new(false)),
+            show_health_log_dialog: false,
+            health_log_content: String::new(),
             pull_progress: Arc::new(RwLock::new(Vec::new())),
             show_delete_confirm: false,
             pending_delete_force: false,
@@ -151,6 +174,8 @@ impl App {
         let docker_clone_list = app.docker.clone();
         let containers_clone_list = containers.clone();
         let show_all_clone = app.show_all.clone();
+        let health_map_list = container_health.clone();
+        let docker_health_list = app.docker.clone();
         
         tokio::spawn(async move {
             loop {
@@ -158,6 +183,37 @@ impl App {
                 let show_all = show_all_clone.load(Ordering::Relaxed);
                 match list_containers(&docker_clone_list, show_all).await {
                     Ok(containers_result) => {
+                         // Check for health changes
+                         {
+                             let health_map = health_map_list.write().unwrap();
+                             for c in &containers_result {
+                                 if c.state != "running" { continue; }
+                                 
+                                 let new_status = parse_health_status_from_string(&c.status);
+                                 let needs_update = match health_map.get(&c.id) {
+                                     Some(current) => current.status != new_status,
+                                     None => true,
+                                 };
+
+                                 if needs_update {
+                                     // If we have no info or status changed, fetch details
+                                     // But we can't await here inside the lock easily if we want to update map later.
+                                     // We should spawn a fetch.
+                                     // However, to avoid spamming spawns, we can just update status in map lightly if we want, 
+                                     // but we promised "details". 
+                                     // Let's spawn a fetch task.
+                                     let docker = docker_health_list.clone();
+                                     let health_map_inner = health_map_list.clone();
+                                     let id = c.id.clone();
+                                     tokio::spawn(async move {
+                                         if let Ok(health) = fetch_health_info(&docker, &id).await {
+                                             health_map_inner.write().unwrap().insert(id, health);
+                                         }
+                                     });
+                                 }
+                             }
+                         }
+
                          let mut containers = containers_clone_list.write().unwrap();
                          *containers = containers_result;
                     }
@@ -166,6 +222,69 @@ impl App {
                     }
                 }
             }
+        });
+
+        // --- Background Task 3: Health Monitoring (Events & Polling) ---
+        let docker_events = app.docker.clone();
+        let health_map_events = container_health.clone();
+        
+        tokio::spawn(async move {
+            use bollard::system::EventsOptions;
+            let mut filters = HashMap::new();
+            filters.insert("type".to_string(), vec!["container".to_string()]);
+            filters.insert("event".to_string(), vec!["health_status".to_string()]);
+            
+            let options = EventsOptions {
+                filters,
+                ..Default::default()
+            };
+            
+            let mut stream = docker_events.inner.events(Some(options));
+            
+            while let Some(event_res) = stream.next().await {
+                 if let Ok(event) = event_res {
+                     if let Some(actor) = event.actor {
+                         if let Some(id) = actor.id {
+                             let id = id.to_string();
+                             let docker = docker_events.clone();
+                             let health_map = health_map_events.clone();
+                             tokio::spawn(async move {
+                                 if let Ok(health) = fetch_health_info(&docker, &id).await {
+                                     health_map.write().unwrap().insert(id, health);
+                                 }
+                             });
+                         }
+                     }
+                 }
+            }
+        });
+
+        // Periodic Polling for Unhealthy containers (every 5s)
+        let docker_poll = app.docker.clone();
+        let health_map_poll = container_health.clone();
+        
+        tokio::spawn(async move {
+             loop {
+                 tokio::time::sleep(Duration::from_secs(5)).await;
+                 
+                 let ids_to_check: Vec<String> = {
+                     let map = health_map_poll.read().unwrap();
+                     map.iter()
+                        .filter(|(_, h)| h.status == HealthStatus::Unhealthy || h.status == HealthStatus::Starting)
+                        .map(|(id, _)| id.clone())
+                        .collect()
+                 };
+
+                 for id in ids_to_check {
+                     let docker = docker_poll.clone();
+                     let map = health_map_poll.clone();
+                     tokio::spawn(async move {
+                         if let Ok(health) = fetch_health_info(&docker, &id).await {
+                             map.write().unwrap().insert(id, health);
+                         }
+                     });
+                 }
+             }
         });
 
         // --- Background Task 1.5: List Images (every 30s) ---
@@ -326,7 +445,6 @@ impl App {
     pub async fn refresh_containers(&mut self) -> Result<()> {
         let containers_result = list_containers(&self.docker, self.show_all.load(Ordering::Relaxed)).await?;
 
-        self.total_containers = containers_result.len();
         self.running_count = 0;
         self.stopped_count = 0;
         self.paused_count = 0;
@@ -343,7 +461,98 @@ impl App {
         let mut containers = self.containers.write().unwrap();
         *containers = containers_result;
         drop(containers);
+        
+        self.update_filtered_containers();
         Ok(())
+    }
+
+    pub fn update_filtered_containers(&mut self) {
+        let containers = self.containers.read().unwrap();
+        let health = self.container_health.read().unwrap();
+        
+        let mut filtered: Vec<ContainerInfo> = containers.iter().filter(|c| {
+             match self.health_filter {
+                 HealthFilter::All => true,
+                 HealthFilter::Unhealthy => {
+                      if let Some(h) = health.get(&c.id) {
+                          h.status == HealthStatus::Unhealthy || h.status == HealthStatus::Starting
+                      } else {
+                          false
+                      }
+                 },
+                 HealthFilter::Healthy => {
+                      if let Some(h) = health.get(&c.id) {
+                          h.status == HealthStatus::Healthy
+                      } else {
+                          false
+                      }
+                 }
+             }
+        }).cloned().collect();
+        
+        // Sort
+        match self.container_sort {
+            SortOrder::CreatedDesc => filtered.sort_by(|a, b| b.created.cmp(&a.created)),
+            SortOrder::CreatedAsc => filtered.sort_by(|a, b| a.created.cmp(&b.created)),
+            SortOrder::HealthDesc => {
+                filtered.sort_by(|a, b| {
+                    let ha = health.get(&a.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
+                    let hb = health.get(&b.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
+                    ha.cmp(hb) // Unhealthy (0) < Healthy (2). Wait, I set Unhealthy=0?
+                    // Enum: Unhealthy=0, Starting=1, Healthy=2, NoCheck=3, Unknown=4
+                    // Ascending: Unhealthy, Starting, Healthy...
+                    // So HealthDesc should be reverse?
+                    // "Enable sort by health status (unhealthy → starting → healthy → no_check → unknown)"
+                    // This order corresponds to ASCENDING if Unhealthy=0.
+                    // So HealthAsc gives desired order.
+                });
+            },
+            SortOrder::HealthAsc => {
+                filtered.sort_by(|a, b| {
+                    let ha = health.get(&a.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
+                    let hb = health.get(&b.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
+                    ha.cmp(hb)
+                });
+            }
+            _ => { // Size sort not applicable to containers, default to Created
+                 filtered.sort_by(|a, b| b.created.cmp(&a.created));
+            }
+        }
+
+        self.filtered_containers = filtered;
+        self.total_containers = self.filtered_containers.len();
+
+        // Clamp selection
+        if self.total_containers > 0 {
+             if let Some(selected) = self.table_state.selected() {
+                 if selected >= self.total_containers {
+                     self.table_state.select(Some(self.total_containers - 1));
+                 }
+             } else {
+                 self.table_state.select(Some(0));
+             }
+        } else {
+            self.table_state.select(None);
+        }
+    }
+
+    pub fn cycle_container_sort(&mut self) {
+        self.container_sort = match self.container_sort {
+            SortOrder::CreatedDesc => SortOrder::CreatedAsc,
+            SortOrder::CreatedAsc => SortOrder::HealthAsc, // Unhealthy first
+            SortOrder::HealthAsc => SortOrder::CreatedDesc,
+            _ => SortOrder::CreatedDesc,
+        };
+        self.update_filtered_containers();
+    }
+
+    pub fn toggle_health_filter(&mut self) {
+        self.health_filter = match self.health_filter {
+            HealthFilter::All => HealthFilter::Unhealthy,
+            HealthFilter::Unhealthy => HealthFilter::Healthy,
+            HealthFilter::Healthy => HealthFilter::All,
+        };
+        self.update_filtered_containers();
     }
 
     pub fn next(&mut self) {
@@ -381,10 +590,9 @@ impl App {
     }
 
     pub fn selected_container(&self) -> Option<ContainerInfo> {
-        let containers = self.containers.read().unwrap();
         self.table_state
             .selected()
-            .and_then(|i| containers.get(i).cloned())
+            .and_then(|i| self.filtered_containers.get(i).cloned())
     }
 
     pub fn trigger_fetch(&mut self, container_id: String) {
@@ -520,6 +728,10 @@ impl App {
             SortOrder::CreatedAsc => images.sort_by(|a, b| a.created.cmp(&b.created)),
             SortOrder::SizeDesc => images.sort_by(|a, b| b.size.cmp(&a.size)),
             SortOrder::SizeAsc => images.sort_by(|a, b| a.size.cmp(&b.size)),
+            SortOrder::HealthDesc | SortOrder::HealthAsc => {
+                // Health sort not applicable to images, default to CreatedDesc
+                images.sort_by(|a, b| b.created.cmp(&a.created));
+            }
         }
         
         drop(images);
@@ -532,6 +744,7 @@ impl App {
             SortOrder::CreatedAsc => SortOrder::SizeDesc,
             SortOrder::SizeDesc => SortOrder::SizeAsc,
             SortOrder::SizeAsc => SortOrder::CreatedDesc,
+            SortOrder::HealthDesc | SortOrder::HealthAsc => SortOrder::CreatedDesc,
         };
     }
 

@@ -21,7 +21,7 @@ crossterm = "0.28"
 bollard = "0.17"
 
 # Date/time handling
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling
 anyhow = "1.0"

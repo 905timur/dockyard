@@ -9,7 +9,7 @@ pub mod image_details;
 use ratatui::Frame;
 use crate::app::{App, View};
 use crate::ui::layout::{get_main_layout, get_right_pane_layout};
-use crate::ui::container_details::render_container_details;
+use crate::ui::container_details::{render_container_details, render_health_log_dialog};
 use crate::ui::container_list::render_container_list;
 use crate::ui::logs::render_container_logs;
 use crate::ui::help::render_help;
@@ -39,6 +39,9 @@ pub fn draw(f: &mut Frame<'_>, app: &mut App) {
             render_container_details(f, left, app);
             render_container_list(f, top_right, app);
             render_container_logs(f, bottom_right, app);
+            
+            // Modal
+            render_health_log_dialog(f, main_area, app);
         },
         View::Images => {
              let (left, right) = get_main_layout(main_area);

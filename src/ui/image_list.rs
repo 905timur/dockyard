@@ -53,6 +53,9 @@ pub fn render_image_list(f: &mut Frame<'_>, area: Rect, app: &mut App) {
         SortOrder::SizeAsc => headers[3].push_str(" ▲"),
         SortOrder::CreatedDesc => headers[4].push_str(" ▼"),
         SortOrder::CreatedAsc => headers[4].push_str(" ▲"),
+        SortOrder::HealthDesc | SortOrder::HealthAsc => {
+            // Health sort not applicable to images, no indicator shown
+        }
     }
 
     let header_cells = headers

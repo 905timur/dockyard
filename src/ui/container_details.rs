@@ -8,8 +8,11 @@ use ratatui::{
     text::{Span, Line},
     Frame,
 };
+use ratatui::widgets::Clear;
 use crate::app::App;
-use crate::ui::layout::{get_details_layout, get_graphs_layout};
+use crate::ui::layout::get_graphs_layout;
+use crate::types::HealthStatus;
+use ratatui::layout::{Constraint, Direction, Layout};
 
 fn format_bytes(bytes: u64) -> String {
     const GB: u64 = 1024 * 1024 * 1024;
@@ -123,8 +126,70 @@ pub fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
     };
     drop(details_lock);
 
-    // Split area: Top for text, Bottom for graphs
-    let (text_area, graphs_area) = get_details_layout(area);
+    // Determine layout based on content
+    let mut show_health = false;
+    let mut health_info_str = String::new();
+    
+    if let Some(container) = app.selected_container() {
+        let health_map = app.container_health.read().unwrap();
+        if let Some(h) = health_map.get(&container.id) {
+            if h.status != HealthStatus::NoHealthCheck && h.status != HealthStatus::Unknown {
+                show_health = true;
+                // Prepare health text
+                health_info_str.push_str(&format!("Status: {:?}\n", h.status));
+                if h.failing_streak > 0 {
+                    health_info_str.push_str(&format!("Failing Streak: {}\n", h.failing_streak));
+                }
+                if let Some(last) = h.last_check_at {
+                    health_info_str.push_str(&format!("Last Checked: {}\n", last.format("%H:%M:%S")));
+                }
+                if let Some(output) = &h.last_check_output {
+                    health_info_str.push_str("Output: ");
+                    let truncated: String = output.chars().take(100).collect();
+                    health_info_str.push_str(&truncated.replace('\n', " "));
+                    if output.len() > 100 { health_info_str.push_str("..."); }
+                    health_info_str.push('\n');
+                }
+                
+                // History
+                health_info_str.push_str("History: ");
+                for check in &h.check_history {
+                    let symbol = if check.exit_code == 0 { "✓" } else { "✗" };
+                    health_info_str.push_str(symbol);
+                    health_info_str.push(' ');
+                }
+                health_info_str.push('\n');
+                
+                // Config
+                if let Some(interval) = &h.interval { health_info_str.push_str(&format!("Interval: {} ", interval)); }
+                if let Some(retries) = h.retries { health_info_str.push_str(&format!("Retries: {} ", retries)); }
+            }
+        }
+    }
+
+    // Dynamic layout
+    let chunks = if show_health {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(10), // Details
+                Constraint::Length(8), // Health
+                Constraint::Length(10), // Graphs
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(10),
+                Constraint::Length(10),
+            ])
+            .split(area)
+    };
+
+    let text_area = chunks[0];
+    let health_area = if show_health { Some(chunks[1]) } else { None };
+    let graphs_area = if show_health { chunks[2] } else { chunks[1] };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -136,6 +201,18 @@ pub fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
         .wrap(Wrap { trim: true });
     
     f.render_widget(paragraph, text_area);
+
+    if let Some(area) = health_area {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Health ")
+            .border_style(Style::default().fg(Color::Green));
+            
+        let paragraph = Paragraph::new(health_info_str)
+            .block(block)
+            .wrap(Wrap { trim: true });
+        f.render_widget(paragraph, area);
+    }
 
     // Render Graphs if a container is selected
     if let Some(container) = app.selected_container() {
@@ -287,4 +364,41 @@ pub fn render_container_details(f: &mut Frame<'_>, area: Rect, app: &App) {
             render_enhanced_graph(f, mem_area, mem_title, mem_val_str, mem_color, is_mem_critical, mem_datasets, 100.0, vec!["0".into(), "50".into(), "100".into()]);
         }
     }
+}
+
+pub fn render_health_log_dialog(f: &mut Frame, area: Rect, app: &App) {
+    if !app.show_health_log_dialog { return; }
+    
+    let block = Block::default()
+        .title(" Health Check Output ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+        
+    let paragraph = Paragraph::new(app.health_log_content.clone())
+        .block(block)
+        .wrap(Wrap { trim: false });
+        
+    let area = centered_rect(60, 60, area);
+    f.render_widget(Clear, area);
+    f.render_widget(paragraph, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
