@@ -93,7 +93,7 @@ Press `Shift+Tab` to switch to the image view. Here you'll see all Docker images
 Navigate with `j`/`k` or arrow keys, then press `Enter` or `Space` to inspect any image's full details in the left pane. You can sort images by pressing `s` (cycles through creation date ascending/descending and size ascending/descending) or filter dangling images with `f`.
 
 ### Pulling New Images
-To download a new image from a registry like Docker Hub, press `p` while in the image view. A dialog will appear asking for the image name. Type something like `nginx:latest`, `postgres:15`, `redis:alpine`, or `ubuntu:22.04` and hit Enter. 
+To download a new image from Docker Hub, press `p` while in the image view. A dialog will appear asking for the image name. Type something like `nginx:latest`, `postgres:15`, `redis:alpine`, or `ubuntu:22.04` and hit Enter. Dockyard will first check if the image already exists locally, and if not, it will proceed with the pull.
 
 Dockyard will start pulling the image and stream the download progress in real-time in the bottom-right pane. You'll see each layer being downloaded just like running `docker pull` from the command line, but the UI stays responsive so you can navigate around and check other things while it downloads. When the pull completes, the image list automatically refreshes and your new image appears.
 
