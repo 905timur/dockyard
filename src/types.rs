@@ -23,10 +23,16 @@ pub struct ImageInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerStats {
     pub cpu_percent: f64,
+    pub user_cpu_percent: f64,
+    pub system_cpu_percent: f64,
     pub memory_usage: u64,
+    pub cached_memory: u64,
     pub memory_limit: u64,
     pub cpu_history: Vec<u64>,
+    pub user_cpu_history: Vec<u64>,
+    pub system_cpu_history: Vec<u64>,
     pub memory_history: Vec<u64>,
+    pub cached_memory_history: Vec<u64>,
     pub last_updated: i64,
 }
 

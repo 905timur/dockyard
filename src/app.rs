@@ -251,30 +251,51 @@ impl App {
                         let _permit = sem.acquire().await.unwrap();
                         
                         match fetch_container_stats(&docker, &id).await {
-                            Ok(Some((cpu, mem, limit))) => {
+                            Ok(Some((cpu, user_cpu, system_cpu, mem, cached_mem, limit))) => {
                                 let mut map = stats_map.write().unwrap();
                                 let now = Utc::now().timestamp();
                                 map.entry(id)
                                     .and_modify(|stats| {
                                         stats.cpu_percent = cpu;
+                                        stats.user_cpu_percent = user_cpu;
+                                        stats.system_cpu_percent = system_cpu;
                                         stats.memory_usage = mem;
+                                        stats.cached_memory = cached_mem;
                                         stats.memory_limit = limit;
                                         stats.last_updated = now;
                                         stats.cpu_history.push((cpu * 100.0) as u64);
+                                        stats.user_cpu_history.push((user_cpu * 100.0) as u64);
+                                        stats.system_cpu_history.push((system_cpu * 100.0) as u64);
                                         stats.memory_history.push(mem);
+                                        stats.cached_memory_history.push(cached_mem);
                                         if stats.cpu_history.len() > 100 {
                                             stats.cpu_history.remove(0);
+                                        }
+                                        if stats.user_cpu_history.len() > 100 {
+                                            stats.user_cpu_history.remove(0);
+                                        }
+                                        if stats.system_cpu_history.len() > 100 {
+                                            stats.system_cpu_history.remove(0);
                                         }
                                         if stats.memory_history.len() > 100 {
                                             stats.memory_history.remove(0);
                                         }
+                                        if stats.cached_memory_history.len() > 100 {
+                                            stats.cached_memory_history.remove(0);
+                                        }
                                     })
                                     .or_insert_with(|| ContainerStats {
                                         cpu_percent: cpu,
+                                        user_cpu_percent: user_cpu,
+                                        system_cpu_percent: system_cpu,
                                         memory_usage: mem,
+                                        cached_memory: cached_mem,
                                         memory_limit: limit,
                                         cpu_history: vec![(cpu * 100.0) as u64],
+                                        user_cpu_history: vec![(user_cpu * 100.0) as u64],
+                                        system_cpu_history: vec![(system_cpu * 100.0) as u64],
                                         memory_history: vec![mem],
+                                        cached_memory_history: vec![cached_mem],
                                         last_updated: now,
                                     });
                             }

@@ -1,9 +1,21 @@
 # Changelog
 
+## v0.2.2
+
+### Changed
+- **Enhanced Graphs**: Redesigned CPU and Memory graphs with high resolution Braille markers
+- **Visual Improvements**: 
+  - Dynamic color gradients based on usage (Green < 60%, Yellow < 80%, Red > 95%)
+  - Trend indicators (↗, →, ↘) for real-time status
+
+- **Multi-Dataset Visualization**:
+  - CPU: Overlay of System vs User vs Total usage
+  - Memory: Visualization of Used vs Cached memory
+
 ## v0.2.1
 
 ### Added
-- **Image Management**: New image list view accessible via `Tab` key
+- **Image Management**: New image list view accessible via `Shift+Tab` key
   - Displays repository, tag, image ID, size, and creation date
   - Auto-refreshes every 30 seconds
   - Sort images by creation date or size (ascending/descending) using `s` key
