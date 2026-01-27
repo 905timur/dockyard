@@ -108,9 +108,4 @@ The help popup (src/ui/help.rs) currently has a truncated Image Actions section.
 **Preferred Issue Category**
 - TUI / UX polish
 
-
-
-
-  - Produce a patch for `CONTRIBUTING.md` that inserts the snippet above.
-
 Which would you like next?
