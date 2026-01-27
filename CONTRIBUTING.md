@@ -3,7 +3,8 @@
 - Run `cargo check` and `cargo test`
 - Open a PR
 
-# Good First Issues for Dockyard
+# Good First Issues
+
 ## Issue 1 — Help popup: add missing Image actions and rows to the Help table
 
 **Problem**
