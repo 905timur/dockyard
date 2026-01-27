@@ -1,23 +1,120 @@
-- Fork the repo
-- Create a feature branch
-- Run `cargo check` and `cargo test`
-- Open a PR
+#Contributing 
 
-# Good First Issues
+## Getting started
 
-## Issue 1 — Help popup: add missing Image actions and rows to the Help table
+1. Fork the repository.
+2. Create a feature branch for your change.
+3. Run `cargo check` and `cargo test` to make sure everything passes.
+4. Open a pull request with a short description of what you changed and how to verify it.
 
-**Problem**
-The help popup (src/ui/help.rs) currently has a truncated Image Actions section. New contributors and users rely on this popup to learn keybindings. The Image Actions section should list the image-specific keys (pull, remove, details, and sort hints) to be complete and consistent with the status bar and UI.
+---
 
-**Acceptance criteria**
-- [ ] Add Image Actions rows to `src/ui/help.rs` so the popup shows at least:
-  - `p` — Pull
-  - `d` — Remove Image
-  - `Enter` — Details
-  - Sort toggle hints for Size/Created (as short informative rows)
-- [ ] Use the existing table/Row style (Row::new(vec![...])) to match other sections.
-- [ ] `cargo check` passes (no Docker runtime required).
+## Good first issues
+
+The issues below are intentionally scoped to be approachable for new contributors.
+
+### Issue 1: Help popup is missing Image actions
+
+**Problem**  
+The help popup in `src/ui/help.rs` has an incomplete Image Actions section. The help screen is one of the main ways users discover keybindings, so this section should fully reflect the image related actions shown in the UI.
+
+**What to do**
+- Add Image Actions rows to `src/ui/help.rs` so the popup shows at least:
+  - `p` for Pull
+  - `d` for Remove Image
+  - `Enter` for Details
+  - Short rows describing sort toggles for Size and Created
+- Use the existing table and row style, for example `Row::new(vec![...])`, to match other sections.
+
+**How to verify**
+- Run `cargo run`.
+- Press `?` to open the help popup and confirm the Image Actions section is complete.
+
+**Relevant files**
+- `src/ui/help.rs`
+
+---
+
+### Issue 2: Add unit tests for `format_bytes` in the container list
+
+**Problem**  
+The `format_bytes` helper in `src/ui/container_list.rs` formats byte sizes for display. Small changes can accidentally alter the output. Unit tests help lock in the current behavior and make future changes safer.
+
+**What to do**
+- Add a `#[cfg(test)]` test module inside `src/ui/container_list.rs`.
+- Add tests that assert the current output for:
+  - About 1 KB, for example `1_024`
+  - About 1 MB, for example `1_048_576`
+  - About 1 GB, for example `1_073_741_824`
+- Add a one line comment explaining that the tests exist to prevent UI formatting regressions.
+
+**How to verify**
+- Run `cargo test` and confirm all tests pass.
+
+**Relevant files**
+- `src/ui/container_list.rs`
+
+---
+
+### Issue 3: Add unit tests for `format_time` in the image list
+
+**Problem**  
+The `format_time` helper in `src/ui/image_list.rs` converts UNIX timestamps into relative strings like `Xm ago`, `Xh ago`, and `Xd ago`. This logic is easy to break without noticing.
+
+**What to do**
+- Add a `#[cfg(test)]` test module inside `src/ui/image_list.rs`.
+- Add tests that cover:
+  - A timestamp a few minutes ago, expecting `Xm ago`
+  - A timestamp a few hours ago, expecting `Xh ago`
+  - A timestamp several days ago, expecting `Xd ago`
+- Use `chrono` helpers to create deterministic timestamps and mention this in a short comment.
+
+**How to verify**
+- Run `cargo test`.
+
+**Relevant files**
+- `src/ui/image_list.rs`
+
+---
+
+### Issue 4: Improve CONTRIBUTING.md with a Developer Experience section
+
+**Problem**  
+`CONTRIBUTING.md` currently contains only minimal setup steps. A short Developer Experience section would make it easier for new contributors to get productive quickly.
+
+**What to do**
+- Update only `CONTRIBUTING.md`.
+- Add a concise "Developer experience" section, no more than 12 lines, that includes:
+  - How to run tests with `cargo test`
+  - How to build and run locally with `cargo run --release`
+  - A note that Docker is not required to build or run tests, but is required to exercise Docker functionality at runtime
+  - Formatting guidance using `cargo fmt` and `cargo fmt -- --check`
+  - An optional linting step using `cargo clippy`
+
+**How to verify**
+- Review the updated `CONTRIBUTING.md` and confirm the instructions are clear and concise.
+
+**Relevant files**
+- `CONTRIBUTING.md`
+
+---
+
+### Issue 5: Render debug log lines in a dim or gray style
+
+**Problem**  
+In `src/ui/logs.rs`, log lines are styled based on keywords like `error`, `warn`, and `info`. Lines containing `debug` are currently rendered the same as normal output, which makes scanning logs harder.
+
+**What to do**
+- Update `src/ui/logs.rs` to detect the substring `debug`, case insensitive.
+- Render debug lines using a dim or gray style, such as `Color::DarkGray`, consistent with the rest of the UI.
+- Keep changes limited to this file.
+
+**How to verify**
+- Run the app and view logs that include debug lines.
+- Confirm that debug messages appear visually dimmer than info or warning messages.
+
+**Relevant files**
+- `src/ui/logs.rs`- [ ] `cargo check` passes (no Docker runtime required).
 - [ ] The PR description includes a short note how to verify locally (run `cargo run` and press `?`).
 
 **Relevant files / modules**
