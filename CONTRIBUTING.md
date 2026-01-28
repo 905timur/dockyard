@@ -1,5 +1,6 @@
 # Contributing 
 
+
 ## Getting started
 
 1. Fork the repository.
@@ -204,6 +205,4 @@ In `src/ui/logs.rs`, log lines are styled based on keywords like `error`, `warn`
 - `src/ui/logs.rs`
 
 **Preferred Issue Category**
-- TUI / UX polish
-
-Which would you like next?
+- TUI / UX polis
