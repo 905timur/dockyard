@@ -35,11 +35,11 @@ Dockyard is a terminal-based Docker management tool built specifically for resou
 
 ### Option 1: Install from Release (Recommended)
 ```bash
-# Download the latest release (v0.2.1)
-wget https://github.com/905timur/dockyard/releases/download/v0.2.1/dockyard-v0.2.1-x86_64.tar.gz
+# Download the latest release (v0.3.1)
+wget https://github.com/905timur/dockyard/releases/download/v0.3.1/dockyard-v0.3.1-x86_64.tar.gz
 
 # Extract and install
-tar -xzf dockyard-v0.2.1-x86_64.tar.gz
+tar -xzf dockyard-v0.3.1-x86_64.tar.gz
 sudo mv dockyard /usr/local/bin/
 
 # Run it
@@ -58,7 +58,7 @@ cargo run --release
 
 ### Option 3: Install with Cargo
 ```bash
-cargo install --git https://github.com/905timur/dockyard.git --tag v0.2.1
+cargo install --git https://github.com/905timur/dockyard.git --tag v0.3.1
 dockyard
 ```
 
