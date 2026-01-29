@@ -3,6 +3,17 @@ use crate::app::{App, View, Focus};
 use std::time::Instant;
 
 pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_change: &mut Instant, needs_fetch: &mut bool) -> bool {
+    // 0. Handle Health Log Dialog
+    if app.show_health_log_dialog {
+        match key {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('E') => {
+                app.show_health_log_dialog = false;
+            }
+            _ => {}
+        }
+        return false;
+    }
+
     // 1. Handle Pull Dialog (Input)
     if app.show_pull_dialog {
         match key {
@@ -66,6 +77,98 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
             } else {
                 app.current_view = View::Containers;
             }
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('t') | KeyCode::Char('T') => {
+            {
+                let mut config = app.config.write().unwrap();
+                config.turbo_mode = !config.turbo_mode;
+            }
+            app.apply_turbo_preset();
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('[') => {
+            {
+                let mut config = app.config.write().unwrap();
+                let is_turbo = config.turbo_mode;
+                config.refresh_rate.decrease(is_turbo);
+            }
+            app.save_config();
+            return false;
+        }
+        KeyCode::Char(']') => {
+            {
+                let mut config = app.config.write().unwrap();
+                let is_turbo = config.turbo_mode;
+                config.refresh_rate.increase(is_turbo);
+            }
+            app.save_config();
+            return false;
+        }
+        KeyCode::Char('m') | KeyCode::Char('M') => {
+            {
+                let mut config = app.config.write().unwrap();
+                config.stats_view.toggle();
+            }
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('R') => {
+            let _ = app.refresh_containers().await;
+            if app.current_view == View::Images {
+                let _ = app.refresh_images().await;
+            }
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('P') => {
+            {
+                let mut config = app.config.write().unwrap();
+                config.show_perf_metrics = !config.show_perf_metrics;
+            }
+            app.save_config();
+            return false;
+        }
+        KeyCode::Char('1') => {
+            // Preset 1: Max Performance
+            {
+                let mut config = app.config.write().unwrap();
+                config.turbo_mode = true;
+                config.refresh_rate = crate::types::RefreshRate::Manual;
+                config.stats_view = crate::types::StatsView::Minimal;
+                config.poll_strategy = crate::types::PollStrategy::VisibleOnly;
+            }
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('2') => {
+            // Preset 2: Balanced
+            {
+                let mut config = app.config.write().unwrap();
+                config.turbo_mode = false;
+                config.refresh_rate = crate::types::RefreshRate::Interval(std::time::Duration::from_secs(5));
+                config.stats_view = crate::types::StatsView::Minimal;
+                config.poll_strategy = crate::types::PollStrategy::AllContainers;
+            }
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('3') => {
+            // Preset 3: Full Detail
+            {
+                let mut config = app.config.write().unwrap();
+                config.turbo_mode = false;
+                config.refresh_rate = crate::types::RefreshRate::Interval(std::time::Duration::from_secs(1));
+                config.stats_view = crate::types::StatsView::Detailed;
+                config.poll_strategy = crate::types::PollStrategy::AllContainers;
+            }
+            app.save_config();
             *needs_fetch = true;
             return false;
         }
@@ -135,7 +238,7 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
                     let _ = app.stop_container().await;
                     let _ = app.refresh_containers().await;
                 }
-                KeyCode::Char('t') => {
+                KeyCode::Char('S') => {
                     let _ = app.start_container().await;
                     let _ = app.refresh_containers().await;
                 }
@@ -149,6 +252,28 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
                     if let Some(container) = app.selected_container() {
                         if container.state.to_lowercase() == "running" {
                             app.should_exec = Some(container.id);
+                        }
+                    }
+                }
+                KeyCode::Char('h') => {
+                    app.toggle_health_filter();
+                    *needs_fetch = true;
+                }
+                KeyCode::Char('H') => {
+                    app.cycle_container_sort();
+                    *needs_fetch = true;
+                }
+                KeyCode::Char('E') => {
+                    if let Some(c) = app.selected_container() {
+                        let health = app.container_health.read().unwrap();
+                        if let Some(h) = health.get(&c.id) {
+                            if let Some(output) = &h.last_check_output {
+                                app.health_log_content = output.clone();
+                                app.show_health_log_dialog = true;
+                            } else {
+                                app.health_log_content = "No output available.".to_string();
+                                app.show_health_log_dialog = true;
+                            }
                         }
                     }
                 }

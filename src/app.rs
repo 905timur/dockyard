@@ -8,9 +8,12 @@ use futures::StreamExt;
 use tokio::sync::Semaphore;
 use chrono::Utc;
 
+use crate::config::{load_config, save_config};
 use crate::docker::client::DockerClient;
-use crate::types::{ContainerInfo, ContainerStats, ImageInfo, Result};
+use crate::types::{ContainerInfo, ContainerStats, ImageInfo, Result, ContainerHealth, HealthStatus, AppConfig, RefreshRate, StatsView, PollStrategy, PerfMetrics};
 use crate::docker::containers::{list_containers, start_container, stop_container, restart_container, remove_container, inspect_container, pause_container, unpause_container};
+use sysinfo::{Pid, System};
+use crate::docker::health::{fetch_health_info, parse_health_status_from_string};
 use crate::docker::images::{list_images, pull_image, remove_image, inspect_image, prune_images};
 use crate::docker::logs::stream_logs;
 use crate::docker::stats::fetch_container_stats;
@@ -33,6 +36,15 @@ pub enum SortOrder {
     CreatedAsc,
     SizeDesc,
     SizeAsc,
+    HealthDesc, // Unhealthy first
+    HealthAsc,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HealthFilter {
+    All,
+    Unhealthy,
+    Healthy,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -44,11 +56,16 @@ pub struct ViewportState {
 pub struct App {
     pub docker: DockerClient,
     pub containers: Arc<RwLock<Vec<ContainerInfo>>>,
+    pub filtered_containers: Vec<ContainerInfo>, // Cache for UI
     pub container_stats: Arc<RwLock<HashMap<String, ContainerStats>>>,
+    pub container_health: Arc<RwLock<HashMap<String, ContainerHealth>>>,
+    pub perf_metrics: Arc<RwLock<PerfMetrics>>,
     pub table_state: TableState,
     pub viewport_state: Arc<RwLock<ViewportState>>,
-    pub stats_interval: u64,
+    pub config: Arc<RwLock<AppConfig>>,
     pub show_all: Arc<AtomicBool>,
+    pub health_filter: HealthFilter,
+    pub container_sort: SortOrder,
     
     // Image State
     pub images: Arc<RwLock<Vec<ImageInfo>>>,
@@ -64,6 +81,8 @@ pub struct App {
     pub show_pull_dialog: bool,
     pub pull_input: String,
     pub is_pulling: Arc<AtomicBool>,
+    pub show_health_log_dialog: bool,
+    pub health_log_content: String,
     pub pull_progress: Arc<RwLock<Vec<String>>>, // Store recent progress lines
     pub show_delete_confirm: bool, // For image deletion
     pub pending_delete_force: bool,
@@ -91,20 +110,28 @@ pub struct App {
 }
 
 impl App {
-    pub async fn new(stats_interval: u64) -> Result<Self> {
+    pub async fn new(_stats_interval_arg: u64) -> Result<Self> {
         let docker = DockerClient::new()?;
+        let config = load_config().unwrap_or_default();
         let containers = Arc::new(RwLock::new(Vec::new()));
         let container_stats = Arc::new(RwLock::new(HashMap::new()));
+        let container_health = Arc::new(RwLock::new(HashMap::new()));
+        let perf_metrics = Arc::new(RwLock::new(PerfMetrics::default()));
         let viewport_state = Arc::new(RwLock::new(ViewportState::default()));
         
         let mut app = Self {
             docker,
             containers: containers.clone(),
+            filtered_containers: Vec::new(),
             container_stats: container_stats.clone(),
+            container_health: container_health.clone(),
+            perf_metrics: perf_metrics.clone(),
             table_state: TableState::default(),
             viewport_state: viewport_state.clone(),
-            stats_interval,
+            config: Arc::new(RwLock::new(config)),
             show_all: Arc::new(AtomicBool::new(true)),
+            health_filter: HealthFilter::All,
+            container_sort: SortOrder::CreatedDesc,
             
             // Image init
             images: Arc::new(RwLock::new(Vec::new())),
@@ -118,6 +145,8 @@ impl App {
             show_pull_dialog: false,
             pull_input: String::new(),
             is_pulling: Arc::new(AtomicBool::new(false)),
+            show_health_log_dialog: false,
+            health_log_content: String::new(),
             pull_progress: Arc::new(RwLock::new(Vec::new())),
             show_delete_confirm: false,
             pending_delete_force: false,
@@ -151,6 +180,8 @@ impl App {
         let docker_clone_list = app.docker.clone();
         let containers_clone_list = containers.clone();
         let show_all_clone = app.show_all.clone();
+        let health_map_list = container_health.clone();
+        let docker_health_list = app.docker.clone();
         
         tokio::spawn(async move {
             loop {
@@ -158,6 +189,37 @@ impl App {
                 let show_all = show_all_clone.load(Ordering::Relaxed);
                 match list_containers(&docker_clone_list, show_all).await {
                     Ok(containers_result) => {
+                         // Check for health changes
+                         {
+                             let health_map = health_map_list.write().unwrap();
+                             for c in &containers_result {
+                                 if c.state != "running" { continue; }
+                                 
+                                 let new_status = parse_health_status_from_string(&c.status);
+                                 let needs_update = match health_map.get(&c.id) {
+                                     Some(current) => current.status != new_status,
+                                     None => true,
+                                 };
+
+                                 if needs_update {
+                                     // If we have no info or status changed, fetch details
+                                     // But we can't await here inside the lock easily if we want to update map later.
+                                     // We should spawn a fetch.
+                                     // However, to avoid spamming spawns, we can just update status in map lightly if we want, 
+                                     // but we promised "details". 
+                                     // Let's spawn a fetch task.
+                                     let docker = docker_health_list.clone();
+                                     let health_map_inner = health_map_list.clone();
+                                     let id = c.id.clone();
+                                     tokio::spawn(async move {
+                                         if let Ok(health) = fetch_health_info(&docker, &id).await {
+                                             health_map_inner.write().unwrap().insert(id, health);
+                                         }
+                                     });
+                                 }
+                             }
+                         }
+
                          let mut containers = containers_clone_list.write().unwrap();
                          *containers = containers_result;
                     }
@@ -166,6 +228,69 @@ impl App {
                     }
                 }
             }
+        });
+
+        // --- Background Task 3: Health Monitoring (Events & Polling) ---
+        let docker_events = app.docker.clone();
+        let health_map_events = container_health.clone();
+        
+        tokio::spawn(async move {
+            use bollard::system::EventsOptions;
+            let mut filters = HashMap::new();
+            filters.insert("type".to_string(), vec!["container".to_string()]);
+            filters.insert("event".to_string(), vec!["health_status".to_string()]);
+            
+            let options = EventsOptions {
+                filters,
+                ..Default::default()
+            };
+            
+            let mut stream = docker_events.inner.events(Some(options));
+            
+            while let Some(event_res) = stream.next().await {
+                 if let Ok(event) = event_res {
+                     if let Some(actor) = event.actor {
+                         if let Some(id) = actor.id {
+                             let id = id.to_string();
+                             let docker = docker_events.clone();
+                             let health_map = health_map_events.clone();
+                             tokio::spawn(async move {
+                                 if let Ok(health) = fetch_health_info(&docker, &id).await {
+                                     health_map.write().unwrap().insert(id, health);
+                                 }
+                             });
+                         }
+                     }
+                 }
+            }
+        });
+
+        // Periodic Polling for Unhealthy containers (every 5s)
+        let docker_poll = app.docker.clone();
+        let health_map_poll = container_health.clone();
+        
+        tokio::spawn(async move {
+             loop {
+                 tokio::time::sleep(Duration::from_secs(5)).await;
+                 
+                 let ids_to_check: Vec<String> = {
+                     let map = health_map_poll.read().unwrap();
+                     map.iter()
+                        .filter(|(_, h)| h.status == HealthStatus::Unhealthy || h.status == HealthStatus::Starting)
+                        .map(|(id, _)| id.clone())
+                        .collect()
+                 };
+
+                 for id in ids_to_check {
+                     let docker = docker_poll.clone();
+                     let map = health_map_poll.clone();
+                     tokio::spawn(async move {
+                         if let Ok(health) = fetch_health_info(&docker, &id).await {
+                             map.write().unwrap().insert(id, health);
+                         }
+                     });
+                 }
+             }
         });
 
         // --- Background Task 1.5: List Images (every 30s) ---
@@ -189,37 +314,89 @@ impl App {
             }
         });
         
-        // --- Background Task 2: Fetch Stats (every 3s, optimized) ---
+        // --- Background Task 4: Performance Monitoring ---
+        let perf_metrics_clone = perf_metrics.clone();
+        
+        std::thread::spawn(move || {
+            let mut sys = System::new();
+            let pid = Pid::from(std::process::id() as usize);
+            
+            loop {
+                sys.refresh_process(pid);
+                if let Some(process) = sys.process(pid) {
+                    let cpu = process.cpu_usage();
+                    let mem = process.memory();
+                    
+                    if let Ok(mut metrics) = perf_metrics_clone.write() {
+                        metrics.cpu_usage = cpu as f64;
+                        metrics.memory_usage = mem;
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
+
+        // --- Background Task 2: Fetch Stats (Dynamic Polling) ---
         let docker_clone = app.docker.clone();
         let containers_clone = containers.clone();
         let stats_clone = container_stats.clone();
         let viewport_clone = viewport_state.clone();
-        let interval_ms = stats_interval * 1000;
+        let config_clone = app.config.clone();
+        let perf_metrics_poll = app.perf_metrics.clone();
         
         tokio::spawn(async move {
-            let semaphore = Arc::new(Semaphore::new(5)); // Max 5 concurrent requests
+            let semaphore = Arc::new(Semaphore::new(10)); // Max 10 concurrent requests to support larger batches
 
             loop {
                 let start_time = tokio::time::Instant::now();
                 
+                // Read Config
+                let (refresh_rate, poll_strategy, viewport_buffer) = {
+                    let c = config_clone.read().unwrap();
+                    (c.refresh_rate.clone(), c.poll_strategy.clone(), c.viewport_buffer)
+                };
+
+                let interval_ms = match refresh_rate {
+                    RefreshRate::Manual => {
+                         tokio::time::sleep(Duration::from_millis(500)).await;
+                         continue;
+                    },
+                    RefreshRate::Interval(d) => d.as_millis() as u64,
+                };
+
                 // 1. Identify targets
                 let targets: Vec<String> = {
                     let containers = containers_clone.read().unwrap();
-                    let viewport = viewport_clone.read().unwrap();
                     let total = containers.len();
                     
                     if total == 0 {
                         Vec::new()
                     } else {
-                        // Calculate visible range with buffer
-                        let start = viewport.offset.saturating_sub(5);
-                        let end = (viewport.offset + viewport.height as usize + 5).min(total);
-                        
-                        containers[start..end]
-                            .iter()
-                            .filter(|c| c.state == "running")
-                            .map(|c| c.id.clone())
-                            .collect()
+                        match poll_strategy {
+                            PollStrategy::AllContainers => {
+                                containers.iter()
+                                    .filter(|c| c.state == "running")
+                                    .map(|c| c.id.clone())
+                                    .collect()
+                            },
+                            PollStrategy::VisibleOnly => {
+                                let viewport = viewport_clone.read().unwrap();
+                                // Calculate visible range with buffer
+                                let start = viewport.offset.saturating_sub(viewport_buffer);
+                                let end = (viewport.offset + viewport.height as usize + viewport_buffer).min(total);
+                                
+                                if start >= total {
+                                    Vec::new()
+                                } else {
+                                    let actual_end = end.min(total);
+                                    containers[start..actual_end]
+                                        .iter()
+                                        .filter(|c| c.state == "running")
+                                        .map(|c| c.id.clone())
+                                        .collect()
+                                }
+                            }
+                        }
                     }
                 };
 
@@ -230,8 +407,11 @@ impl App {
 
                 // 2. Staggered execution
                 let target_count = targets.len();
+                // If interval is short (e.g. 1s) and targets many (e.g. 100), delay per req might be too small
+                // or we might flood.
+                // If AllContainers, we should try to fit them in interval.
                 let delay_per_req = if target_count > 0 {
-                    interval_ms / target_count as u64
+                    interval_ms / (target_count as u64).max(1)
                 } else {
                     0
                 };
@@ -242,7 +422,9 @@ impl App {
                     let docker = docker_clone.clone();
                     let stats_map = stats_clone.clone();
                     let sem = semaphore.clone();
-                    let delay = delay_per_req * i as u64;
+                    
+                    // Cap max delay to avoid completely stalling if logic is off
+                    let delay = std::cmp::min(delay_per_req * i as u64, interval_ms);
 
                     tasks.push(tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -251,30 +433,51 @@ impl App {
                         let _permit = sem.acquire().await.unwrap();
                         
                         match fetch_container_stats(&docker, &id).await {
-                            Ok(Some((cpu, mem, limit))) => {
+                            Ok(Some((cpu, user_cpu, system_cpu, mem, cached_mem, limit))) => {
                                 let mut map = stats_map.write().unwrap();
                                 let now = Utc::now().timestamp();
                                 map.entry(id)
                                     .and_modify(|stats| {
                                         stats.cpu_percent = cpu;
+                                        stats.user_cpu_percent = user_cpu;
+                                        stats.system_cpu_percent = system_cpu;
                                         stats.memory_usage = mem;
+                                        stats.cached_memory = cached_mem;
                                         stats.memory_limit = limit;
                                         stats.last_updated = now;
                                         stats.cpu_history.push((cpu * 100.0) as u64);
+                                        stats.user_cpu_history.push((user_cpu * 100.0) as u64);
+                                        stats.system_cpu_history.push((system_cpu * 100.0) as u64);
                                         stats.memory_history.push(mem);
+                                        stats.cached_memory_history.push(cached_mem);
                                         if stats.cpu_history.len() > 100 {
                                             stats.cpu_history.remove(0);
+                                        }
+                                        if stats.user_cpu_history.len() > 100 {
+                                            stats.user_cpu_history.remove(0);
+                                        }
+                                        if stats.system_cpu_history.len() > 100 {
+                                            stats.system_cpu_history.remove(0);
                                         }
                                         if stats.memory_history.len() > 100 {
                                             stats.memory_history.remove(0);
                                         }
+                                        if stats.cached_memory_history.len() > 100 {
+                                            stats.cached_memory_history.remove(0);
+                                        }
                                     })
                                     .or_insert_with(|| ContainerStats {
                                         cpu_percent: cpu,
+                                        user_cpu_percent: user_cpu,
+                                        system_cpu_percent: system_cpu,
                                         memory_usage: mem,
+                                        cached_memory: cached_mem,
                                         memory_limit: limit,
                                         cpu_history: vec![(cpu * 100.0) as u64],
+                                        user_cpu_history: vec![(user_cpu * 100.0) as u64],
+                                        system_cpu_history: vec![(system_cpu * 100.0) as u64],
                                         memory_history: vec![mem],
+                                        cached_memory_history: vec![cached_mem],
                                         last_updated: now,
                                     });
                             }
@@ -288,11 +491,13 @@ impl App {
                 }
                 
                 // Wait for all spawned tasks to ensure we don't overrun
-                // Actually, we want to maintain the cycle time. 
-                // Staggering spreads them out. The last one starts at ~3s.
-                // We should wait for the *cycle* to complete.
-                
                 let elapsed = start_time.elapsed();
+                
+                // Update poll time metric
+                if let Ok(mut metrics) = perf_metrics_poll.write() {
+                    metrics.poll_time_ms = elapsed.as_millis() as u64;
+                }
+
                 if elapsed < Duration::from_millis(interval_ms) {
                     tokio::time::sleep(Duration::from_millis(interval_ms) - elapsed).await;
                 }
@@ -305,7 +510,6 @@ impl App {
     pub async fn refresh_containers(&mut self) -> Result<()> {
         let containers_result = list_containers(&self.docker, self.show_all.load(Ordering::Relaxed)).await?;
 
-        self.total_containers = containers_result.len();
         self.running_count = 0;
         self.stopped_count = 0;
         self.paused_count = 0;
@@ -322,7 +526,98 @@ impl App {
         let mut containers = self.containers.write().unwrap();
         *containers = containers_result;
         drop(containers);
+        
+        self.update_filtered_containers();
         Ok(())
+    }
+
+    pub fn update_filtered_containers(&mut self) {
+        let containers = self.containers.read().unwrap();
+        let health = self.container_health.read().unwrap();
+        
+        let mut filtered: Vec<ContainerInfo> = containers.iter().filter(|c| {
+             match self.health_filter {
+                 HealthFilter::All => true,
+                 HealthFilter::Unhealthy => {
+                      if let Some(h) = health.get(&c.id) {
+                          h.status == HealthStatus::Unhealthy || h.status == HealthStatus::Starting
+                      } else {
+                          false
+                      }
+                 },
+                 HealthFilter::Healthy => {
+                      if let Some(h) = health.get(&c.id) {
+                          h.status == HealthStatus::Healthy
+                      } else {
+                          false
+                      }
+                 }
+             }
+        }).cloned().collect();
+        
+        // Sort
+        match self.container_sort {
+            SortOrder::CreatedDesc => filtered.sort_by(|a, b| b.created.cmp(&a.created)),
+            SortOrder::CreatedAsc => filtered.sort_by(|a, b| a.created.cmp(&b.created)),
+            SortOrder::HealthDesc => {
+                filtered.sort_by(|a, b| {
+                    let ha = health.get(&a.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
+                    let hb = health.get(&b.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
+                    ha.cmp(hb) // Unhealthy (0) < Healthy (2). Wait, I set Unhealthy=0?
+                    // Enum: Unhealthy=0, Starting=1, Healthy=2, NoCheck=3, Unknown=4
+                    // Ascending: Unhealthy, Starting, Healthy...
+                    // So HealthDesc should be reverse?
+                    // "Enable sort by health status (unhealthy → starting → healthy → no_check → unknown)"
+                    // This order corresponds to ASCENDING if Unhealthy=0.
+                    // So HealthAsc gives desired order.
+                });
+            },
+            SortOrder::HealthAsc => {
+                filtered.sort_by(|a, b| {
+                    let ha = health.get(&a.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
+                    let hb = health.get(&b.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
+                    ha.cmp(hb)
+                });
+            }
+            _ => { // Size sort not applicable to containers, default to Created
+                 filtered.sort_by(|a, b| b.created.cmp(&a.created));
+            }
+        }
+
+        self.filtered_containers = filtered;
+        self.total_containers = self.filtered_containers.len();
+
+        // Clamp selection
+        if self.total_containers > 0 {
+             if let Some(selected) = self.table_state.selected() {
+                 if selected >= self.total_containers {
+                     self.table_state.select(Some(self.total_containers - 1));
+                 }
+             } else {
+                 self.table_state.select(Some(0));
+             }
+        } else {
+            self.table_state.select(None);
+        }
+    }
+
+    pub fn cycle_container_sort(&mut self) {
+        self.container_sort = match self.container_sort {
+            SortOrder::CreatedDesc => SortOrder::CreatedAsc,
+            SortOrder::CreatedAsc => SortOrder::HealthAsc, // Unhealthy first
+            SortOrder::HealthAsc => SortOrder::CreatedDesc,
+            _ => SortOrder::CreatedDesc,
+        };
+        self.update_filtered_containers();
+    }
+
+    pub fn toggle_health_filter(&mut self) {
+        self.health_filter = match self.health_filter {
+            HealthFilter::All => HealthFilter::Unhealthy,
+            HealthFilter::Unhealthy => HealthFilter::Healthy,
+            HealthFilter::Healthy => HealthFilter::All,
+        };
+        self.update_filtered_containers();
     }
 
     pub fn next(&mut self) {
@@ -360,10 +655,9 @@ impl App {
     }
 
     pub fn selected_container(&self) -> Option<ContainerInfo> {
-        let containers = self.containers.read().unwrap();
         self.table_state
             .selected()
-            .and_then(|i| containers.get(i).cloned())
+            .and_then(|i| self.filtered_containers.get(i).cloned())
     }
 
     pub fn trigger_fetch(&mut self, container_id: String) {
@@ -499,6 +793,10 @@ impl App {
             SortOrder::CreatedAsc => images.sort_by(|a, b| a.created.cmp(&b.created)),
             SortOrder::SizeDesc => images.sort_by(|a, b| b.size.cmp(&a.size)),
             SortOrder::SizeAsc => images.sort_by(|a, b| a.size.cmp(&b.size)),
+            SortOrder::HealthDesc | SortOrder::HealthAsc => {
+                // Health sort not applicable to images, default to CreatedDesc
+                images.sort_by(|a, b| b.created.cmp(&a.created));
+            }
         }
         
         drop(images);
@@ -511,6 +809,7 @@ impl App {
             SortOrder::CreatedAsc => SortOrder::SizeDesc,
             SortOrder::SizeDesc => SortOrder::SizeAsc,
             SortOrder::SizeAsc => SortOrder::CreatedDesc,
+            SortOrder::HealthDesc | SortOrder::HealthAsc => SortOrder::CreatedDesc,
         };
     }
 
@@ -633,6 +932,28 @@ impl App {
     pub fn toggle_filter(&mut self) {
         let current = self.show_all.load(Ordering::Relaxed);
         self.show_all.store(!current, Ordering::Relaxed);
+    }
+
+    pub fn apply_turbo_preset(&mut self) {
+        let mut config = self.config.write().unwrap();
+        if config.turbo_mode {
+            // Turbo Mode ON
+            config.refresh_rate = RefreshRate::Interval(Duration::from_secs(2));
+            config.stats_view = StatsView::Minimal;
+            config.poll_strategy = PollStrategy::VisibleOnly;
+        } else {
+            // Turbo Mode OFF (Normal)
+            config.refresh_rate = RefreshRate::Interval(Duration::from_secs(1));
+            config.stats_view = StatsView::Detailed;
+            config.poll_strategy = PollStrategy::AllContainers;
+        }
+    }
+
+    pub fn save_config(&self) {
+        let config = self.config.read().unwrap();
+        if let Err(e) = save_config(&config) {
+            eprintln!("Failed to save config: {}", e);
+        }
     }
 }
 
