@@ -56,6 +56,21 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
         match key {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
                 app.show_help = false;
+                app.current_help_tab = crate::types::HelpTab::Keybindings;
+                app.help_scroll = 0; // Reset scroll
+            }
+            KeyCode::Tab => {
+                app.current_help_tab = match app.current_help_tab {
+                    crate::types::HelpTab::Keybindings => crate::types::HelpTab::Wiki,
+                    crate::types::HelpTab::Wiki => crate::types::HelpTab::Keybindings,
+                };
+                app.help_scroll = 0; // Reset scroll on tab switch
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.help_scroll = app.help_scroll.saturating_add(1);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.help_scroll = app.help_scroll.saturating_sub(1);
             }
             _ => {}
         }

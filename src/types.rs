@@ -175,6 +175,18 @@ pub struct ContainerHealth {
     pub start_period: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpTab {
+    Keybindings,
+    Wiki,
+}
+
+impl Default for HelpTab {
+    fn default() -> Self {
+        Self::Keybindings
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct PerfMetrics {
     pub cpu_usage: f64,

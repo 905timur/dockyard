@@ -23,7 +23,8 @@ Dockyard is a terminal-based Docker management tool built specifically for resou
 - Staggered API requests – spreads Docker calls evenly to prevent CPU spikes
 - Synchronous UI rendering – zero async overhead, no thread parking, instant frame updates
 - Event-driven architecture with lock-free UI – background workers never block the terminal
-- Configurable polling intervals – tune performance for your environment
+- **Built-in Wiki**: Access project documentation and troubleshooting tips directly from the help menu (`?`)
+- **Configurable polling intervals**: Tune performance for your environment
 
 ## Installation 
 
@@ -107,16 +108,17 @@ Select an image and press `d` to remove it (you'll get a confirmation prompt). I
 Dockyard offers flexible performance modes to optimize resource usage based on your needs:
 
 ### Turbo Mode (High Performance)
-- Activated with `t` key
-- Aggressive optimization for low-spec systems
-- Limits stats polling to visible containers only
-- Disables unnecessary animations
-- Reduces UI overhead
+- **Activation**: Toggle with the `t` key.
+- **Optimization Strategy**:
+  - **Viewport-Aware Polling**: Only fetches stats for containers currently visible on your screen. This drastically reduces the load on the Docker daemon when managing 50+ containers.
+  - **Minimalist UI**: Switches to a streamlined stats view, reducing the CPU cycles required for rendering complex graphs and detailed history.
+  - **Lower Overhead**: Internal processing is tuned to favor TUI responsiveness over background data granularity.
+- **Ideal for**: Low-end VPS instances, single-core servers, or when managing a massive container fleet.
 
 ### Normal Mode (Default)
-- Full functionality with balanced resource usage
-- Polls all containers for stats
-- Shows detailed information by default
+- **Full Visibility**: Polls stats for all running containers, even those off-screen, ensuring history graphs are populated for everything.
+- **Detailed Stats**: Provides the full CPU/Memory breakdown with high-resolution graphs.
+- **Standard Refresh**: Balanced polling and rendering for a smooth, feature-rich experience.
 
 ### Performance Presets
 | Key | Preset | Description |
@@ -140,7 +142,8 @@ Dockyard offers flexible performance modes to optimize resource usage based on y
 | Key | Action |
 |-----|--------|
 | `?` | Help menu |
-| `Tab` or `Shift+Tab` | Switch between Containers and Images views |
+| `Tab` | Switch focus (Containers) or Switch Help Tab (Help Menu) |
+| `Shift+Tab` or `v` | Switch between Containers and Images views |
 | `q` | Quit |
 | `R` | Refresh containers and images manually |
 

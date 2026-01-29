@@ -101,6 +101,6 @@ pub fn draw(f: &mut Frame<'_>, app: &mut App) {
     f.render_widget(status_bar, status_area);
 
     if app.show_help {
-        render_help(f, area);
+        render_help(f, area, app);
     }
 }

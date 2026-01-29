@@ -13,6 +13,10 @@
   - Memory: Visualization of Used vs Cached memory
 
 ### What's new?
+- **Wiki Tab**: Added a dedicated Wiki tab to the help menu (`?`)
+  - Switch between **Keybindings** and **Wiki** using the `Tab` key
+  - Includes project overview, common workflows, and troubleshooting tips
+  - Resets to Keybindings tab automatically when closed
 - **Performance Modes**: Added Turbo and Normal performance modes
   - **Turbo Mode**: Optimizes for speed with:
     - 2-second refresh rate

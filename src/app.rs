@@ -105,6 +105,8 @@ pub struct App {
 
     // UI State
     pub show_help: bool,
+    pub current_help_tab: crate::types::HelpTab,
+    pub help_scroll: u16,
     pub should_exec: Option<String>,
     pub focus: Focus,
 }
@@ -162,6 +164,8 @@ impl App {
             stopped_count: 0,
             paused_count: 0,
             show_help: false,
+            current_help_tab: crate::types::HelpTab::default(),
+            help_scroll: 0,
             should_exec: None,
             focus: Focus::ContainerList,
         };
@@ -202,12 +206,6 @@ impl App {
                                  };
 
                                  if needs_update {
-                                     // If we have no info or status changed, fetch details
-                                     // But we can't await here inside the lock easily if we want to update map later.
-                                     // We should spawn a fetch.
-                                     // However, to avoid spamming spawns, we can just update status in map lightly if we want, 
-                                     // but we promised "details". 
-                                     // Let's spawn a fetch task.
                                      let docker = docker_health_list.clone();
                                      let health_map_inner = health_map_list.clone();
                                      let id = c.id.clone();
@@ -345,12 +343,11 @@ impl App {
         let perf_metrics_poll = app.perf_metrics.clone();
         
         tokio::spawn(async move {
-            let semaphore = Arc::new(Semaphore::new(10)); // Max 10 concurrent requests to support larger batches
+            let semaphore = Arc::new(Semaphore::new(10));
 
             loop {
                 let start_time = tokio::time::Instant::now();
                 
-                // Read Config
                 let (refresh_rate, poll_strategy, viewport_buffer) = {
                     let c = config_clone.read().unwrap();
                     (c.refresh_rate.clone(), c.poll_strategy.clone(), c.viewport_buffer)
@@ -364,7 +361,6 @@ impl App {
                     RefreshRate::Interval(d) => d.as_millis() as u64,
                 };
 
-                // 1. Identify targets
                 let targets: Vec<String> = {
                     let containers = containers_clone.read().unwrap();
                     let total = containers.len();
@@ -381,7 +377,6 @@ impl App {
                             },
                             PollStrategy::VisibleOnly => {
                                 let viewport = viewport_clone.read().unwrap();
-                                // Calculate visible range with buffer
                                 let start = viewport.offset.saturating_sub(viewport_buffer);
                                 let end = (viewport.offset + viewport.height as usize + viewport_buffer).min(total);
                                 
@@ -405,11 +400,7 @@ impl App {
                     continue;
                 }
 
-                // 2. Staggered execution
                 let target_count = targets.len();
-                // If interval is short (e.g. 1s) and targets many (e.g. 100), delay per req might be too small
-                // or we might flood.
-                // If AllContainers, we should try to fit them in interval.
                 let delay_per_req = if target_count > 0 {
                     interval_ms / (target_count as u64).max(1)
                 } else {
@@ -423,13 +414,11 @@ impl App {
                     let stats_map = stats_clone.clone();
                     let sem = semaphore.clone();
                     
-                    // Cap max delay to avoid completely stalling if logic is off
                     let delay = std::cmp::min(delay_per_req * i as u64, interval_ms);
 
                     tasks.push(tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_millis(delay)).await;
                         
-                        // Acquire permit
                         let _permit = sem.acquire().await.unwrap();
                         
                         match fetch_container_stats(&docker, &id).await {
@@ -481,19 +470,16 @@ impl App {
                                         last_updated: now,
                                     });
                             }
-                            Ok(None) => {} // Container likely stopped
+                            Ok(None) => {}
                             Err(e) => {
-                                // Graceful error handling (Requirement #6)
                                 eprintln!("Failed to fetch stats for {}: {}", id, e);
                             }
                         }
                     }));
                 }
                 
-                // Wait for all spawned tasks to ensure we don't overrun
                 let elapsed = start_time.elapsed();
                 
-                // Update poll time metric
                 if let Ok(mut metrics) = perf_metrics_poll.write() {
                     metrics.poll_time_ms = elapsed.as_millis() as u64;
                 }
@@ -555,7 +541,6 @@ impl App {
              }
         }).cloned().collect();
         
-        // Sort
         match self.container_sort {
             SortOrder::CreatedDesc => filtered.sort_by(|a, b| b.created.cmp(&a.created)),
             SortOrder::CreatedAsc => filtered.sort_by(|a, b| a.created.cmp(&b.created)),
@@ -563,13 +548,7 @@ impl App {
                 filtered.sort_by(|a, b| {
                     let ha = health.get(&a.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
                     let hb = health.get(&b.id).map(|h| &h.status).unwrap_or(&HealthStatus::NoHealthCheck);
-                    ha.cmp(hb) // Unhealthy (0) < Healthy (2). Wait, I set Unhealthy=0?
-                    // Enum: Unhealthy=0, Starting=1, Healthy=2, NoCheck=3, Unknown=4
-                    // Ascending: Unhealthy, Starting, Healthy...
-                    // So HealthDesc should be reverse?
-                    // "Enable sort by health status (unhealthy → starting → healthy → no_check → unknown)"
-                    // This order corresponds to ASCENDING if Unhealthy=0.
-                    // So HealthAsc gives desired order.
+                    ha.cmp(hb)
                 });
             },
             SortOrder::HealthAsc => {
@@ -579,7 +558,7 @@ impl App {
                     ha.cmp(hb)
                 });
             }
-            _ => { // Size sort not applicable to containers, default to Created
+            _ => {
                  filtered.sort_by(|a, b| b.created.cmp(&a.created));
             }
         }
@@ -587,7 +566,6 @@ impl App {
         self.filtered_containers = filtered;
         self.total_containers = self.filtered_containers.len();
 
-        // Clamp selection
         if self.total_containers > 0 {
              if let Some(selected) = self.table_state.selected() {
                  if selected >= self.total_containers {
@@ -604,7 +582,7 @@ impl App {
     pub fn cycle_container_sort(&mut self) {
         self.container_sort = match self.container_sort {
             SortOrder::CreatedDesc => SortOrder::CreatedAsc,
-            SortOrder::CreatedAsc => SortOrder::HealthAsc, // Unhealthy first
+            SortOrder::CreatedAsc => SortOrder::HealthAsc,
             SortOrder::HealthAsc => SortOrder::CreatedDesc,
             _ => SortOrder::CreatedDesc,
         };
@@ -667,7 +645,6 @@ impl App {
         
         self.last_fetched_id = Some(container_id.clone());
         
-        // Clear previous data
         {
             let mut details = self.selected_container_details.write().unwrap();
             *details = None;
@@ -679,7 +656,6 @@ impl App {
         let details_lock = self.selected_container_details.clone();
         let id_clone = container_id.clone();
 
-        // Spawn details fetch
         tokio::spawn(async move {
             let details_res = inspect_container(&docker, &id_clone).await;
             let details_str = match details_res {
@@ -689,12 +665,10 @@ impl App {
             *details_lock.write().unwrap() = Some(details_str);
         });
 
-        // Start log stream
         self.start_log_stream(container_id);
     }
 
     fn start_log_stream(&mut self, container_id: String) {
-        // Abort previous task
         if let Some(handle) = self.log_stream_task.take() {
             handle.abort();
         }
@@ -710,7 +684,6 @@ impl App {
                     Ok(log) => {
                         let mut logs = logs_lock.write().unwrap();
                         logs.push(log.to_string());
-                        // Keep last 1000 lines to prevent memory issues
                         if logs.len() > 1000 {
                             logs.remove(0);
                         }
@@ -748,7 +721,6 @@ impl App {
         if let Some(container) = self.selected_container() {
             remove_container(&self.docker, &container.id).await?;
             self.refresh_containers().await?;
-            // Reset selection if out of bounds
             if self.total_containers > 0 && self.table_state.selected().unwrap_or(0) >= self.total_containers {
                  self.table_state.select(Some(self.total_containers - 1));
             }
@@ -776,8 +748,6 @@ impl App {
         Ok(())
     }
 
-    // --- Image Methods ---
-
     pub async fn refresh_images(&mut self) -> Result<()> {
         let show_dangling = self.show_dangling.load(Ordering::Relaxed);
         let images_result = list_images(&self.docker, show_dangling).await?;
@@ -794,12 +764,9 @@ impl App {
             SortOrder::SizeDesc => images.sort_by(|a, b| b.size.cmp(&a.size)),
             SortOrder::SizeAsc => images.sort_by(|a, b| a.size.cmp(&b.size)),
             SortOrder::HealthDesc | SortOrder::HealthAsc => {
-                // Health sort not applicable to images, default to CreatedDesc
                 images.sort_by(|a, b| b.created.cmp(&a.created));
             }
         }
-        
-        drop(images);
         Ok(())
     }
 
@@ -809,64 +776,41 @@ impl App {
             SortOrder::CreatedAsc => SortOrder::SizeDesc,
             SortOrder::SizeDesc => SortOrder::SizeAsc,
             SortOrder::SizeAsc => SortOrder::CreatedDesc,
-            SortOrder::HealthDesc | SortOrder::HealthAsc => SortOrder::CreatedDesc,
+            _ => SortOrder::CreatedDesc,
         };
     }
 
     pub fn next_image(&mut self) {
-        if self.total_images == 0 {
-            return;
-        }
+        if self.total_images == 0 { return; }
         let i = match self.table_state_images.selected() {
-            Some(i) => {
-                if i >= self.total_images - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
+            Some(i) => if i >= self.total_images - 1 { 0 } else { i + 1 },
             None => 0,
         };
         self.table_state_images.select(Some(i));
     }
 
     pub fn previous_image(&mut self) {
-        if self.total_images == 0 {
-            return;
-        }
+        if self.total_images == 0 { return; }
         let i = match self.table_state_images.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.total_images - 1
-                } else {
-                    i - 1
-                }
-            }
+            Some(i) => if i == 0 { self.total_images - 1 } else { i - 1 },
             None => 0,
         };
         self.table_state_images.select(Some(i));
     }
 
     pub fn selected_image(&self) -> Option<ImageInfo> {
-        let images = self.images.read().unwrap();
-        self.table_state_images
-            .selected()
-            .and_then(|i| images.get(i).cloned())
+        self.images.read().unwrap().get(self.table_state_images.selected()?).cloned()
     }
 
     pub fn trigger_image_details(&mut self) {
         if let Some(image) = self.selected_image() {
             let docker = self.docker.clone();
             let details_lock = self.selected_image_details.clone();
-            let id = image.id.clone();
-            
             tokio::spawn(async move {
-                let details_res = inspect_image(&docker, &id).await;
-                let details_str = match details_res {
-                    Ok(info) => format_image_details(info),
-                    Err(e) => format!("Error fetching image details: {}", e),
-                };
-                *details_lock.write().unwrap() = Some(details_str);
+                match inspect_image(&docker, &image.id).await {
+                    Ok(info) => *details_lock.write().unwrap() = Some(format_image_details(info)),
+                    Err(e) => *details_lock.write().unwrap() = Some(format!("Error: {}", e)),
+                }
             });
         }
     }
@@ -875,9 +819,6 @@ impl App {
         if let Some(image) = self.selected_image() {
             remove_image(&self.docker, &image.id, force).await?;
             self.refresh_images().await?;
-            if self.total_images > 0 && self.table_state_images.selected().unwrap_or(0) >= self.total_images {
-                self.table_state_images.select(Some(self.total_images - 1));
-            }
         }
         Ok(())
     }
@@ -889,43 +830,32 @@ impl App {
     }
 
     pub fn start_pull_image(&mut self, image_name: String) {
-        self.is_pulling.store(true, Ordering::Relaxed);
-        self.pull_progress.write().unwrap().clear();
-        self.show_pull_dialog = false;
-        
         let docker = self.docker.clone();
+        let progress_lock = self.pull_progress.clone();
         let is_pulling = self.is_pulling.clone();
-        let pull_progress = self.pull_progress.clone();
+        let images_ref = self.images.clone();
         
+        is_pulling.store(true, Ordering::Relaxed);
+        progress_lock.write().unwrap().clear();
+
         tokio::spawn(async move {
-            let mut stream = pull_image(&docker, image_name.clone());
-            
-            while let Some(result) = stream.next().await {
-                match result {
+            let mut stream = pull_image(&docker, image_name);
+            while let Some(res) = stream.next().await {
+                let mut progress = progress_lock.write().unwrap();
+                match res {
                     Ok(info) => {
-                        let mut progress = pull_progress.write().unwrap();
-                        let status = info.status.unwrap_or_default();
-                        let progress_detail = info.progress.unwrap_or_default();
-                        let line = if !progress_detail.is_empty() {
-                            format!("{}: {}", status, progress_detail)
-                        } else {
-                            status
-                        };
-                        
-                        // Keep only last 10 lines
-                        if progress.len() >= 10 {
-                            progress.remove(0);
-                        }
-                        progress.push(line);
+                        let msg = format!("{:?}", info); // Simplest conversion
+                        progress.push(msg);
                     }
-                    Err(e) => {
-                        let mut progress = pull_progress.write().unwrap();
-                         progress.push(format!("Error: {}", e));
-                    }
+                    Err(e) => progress.push(format!("Error: {}", e)),
                 }
+                if progress.len() > 100 { progress.remove(0); }
             }
-            
             is_pulling.store(false, Ordering::Relaxed);
+            
+            if let Ok(imgs) = list_images(&docker, false).await {
+                *images_ref.write().unwrap() = imgs;
+            }
         });
     }
 
@@ -937,12 +867,10 @@ impl App {
     pub fn apply_turbo_preset(&mut self) {
         let mut config = self.config.write().unwrap();
         if config.turbo_mode {
-            // Turbo Mode ON
             config.refresh_rate = RefreshRate::Interval(Duration::from_secs(2));
             config.stats_view = StatsView::Minimal;
             config.poll_strategy = PollStrategy::VisibleOnly;
         } else {
-            // Turbo Mode OFF (Normal)
             config.refresh_rate = RefreshRate::Interval(Duration::from_secs(1));
             config.stats_view = StatsView::Detailed;
             config.poll_strategy = PollStrategy::AllContainers;
@@ -951,133 +879,48 @@ impl App {
 
     pub fn save_config(&self) {
         let config = self.config.read().unwrap();
-        if let Err(e) = save_config(&config) {
-            eprintln!("Failed to save config: {}", e);
-        }
+        let _ = save_config(&config);
     }
 }
 
-// Helper functions moved from main.rs
-fn format_details(info: ContainerInspectResponse) -> String {
+pub fn format_details(info: ContainerInspectResponse) -> String {
     let mut s = String::new();
+    s.push_str(&format!("ID: {}\n", info.id.as_deref().unwrap_or("Unknown")));
+    s.push_str(&format!("Name: {}\n", info.name.as_deref().unwrap_or("Unknown")));
+    s.push_str(&format!("Image: {}\n", info.image.as_deref().unwrap_or("Unknown")));
+    s.push_str(&format!("Status: {}\n", info.state.as_ref().map(|st| format!("{:?}", st.status)).unwrap_or_else(|| "Unknown".to_string())));
     
-    // Image & Name
-    s.push_str("NAME: ");
-    s.push_str(&info.name.unwrap_or_default().trim_start_matches('/').to_string());
-    s.push_str("\n\n");
-
-    s.push_str("IMAGE: ");
-    s.push_str(&info.config.as_ref().and_then(|c| c.image.clone()).unwrap_or_default());
-    s.push_str("\n\n");
-
-    // Network
-    s.push_str("NETWORK:\n");
-    if let Some(net) = info.network_settings {
-        if let Some(ports) = net.ports {
-            for (k, v) in ports {
-                if let Some(bindings) = v {
-                    for b in bindings {
-                        s.push_str(&format!("  {} -> {}:{}\n", k, b.host_ip.clone().unwrap_or_default(), b.host_port.clone().unwrap_or_default()));
-                    }
-                } else {
-                    s.push_str(&format!("  {}\n", k));
-                }
-            }
-        }
-        if let Some(networks) = net.networks {
-            for (name, _) in networks {
-                s.push_str(&format!("  Network: {}\n", name));
-            }
-        }
-    }
-    s.push('\n');
-
-    // Resources
-    s.push_str("RESOURCES:\n");
-    if let Some(host_config) = info.host_config.as_ref() {
-        s.push_str(&format!("  Memory: {}\n", format_bytes(host_config.memory.unwrap_or(0) as u64)));
-        s.push_str(&format!("  NanoCPUs: {}\n", host_config.nano_cpus.unwrap_or(0)));
-        if let Some(restart) = &host_config.restart_policy {
-            let restart_policy = restart.name.as_ref()
-                .map(|n| format!("{:?}", n))
-                .unwrap_or_else(|| "no".to_string());
-            s.push_str(&format!("  Restart: {}\n", restart_policy));
-        }
-    }
-    s.push('\n');
-
-    // Environment
-    s.push_str("ENV:\n");
     if let Some(config) = info.config {
         if let Some(env) = config.env {
-            for e in env {
-                s.push_str(&format!("  {}\n", e));
-            }
+            s.push_str("\nEnvironment:\n");
+            for e in env { s.push_str(&format!("  {}\n", e)); }
         }
     }
-    s.push('\n');
-
-    // Created
-    s.push_str(&format!("Created: {}\n", info.created.unwrap_or_default()));
-
+    
+    if let Some(mounts) = info.mounts {
+        s.push_str("\nMounts:\n");
+        for m in mounts {
+            s.push_str(&format!("  {} -> {}\n", m.source.as_deref().unwrap_or("?"), m.destination.as_deref().unwrap_or("?")));
+        }
+    }
+    
     s
 }
 
-fn format_image_details(info: bollard::models::ImageInspect) -> String {
+pub fn format_image_details(info: bollard::models::ImageInspect) -> String {
     let mut s = String::new();
-
-    s.push_str(&format!("ID: {}\n", info.id.as_deref().unwrap_or("").trim_start_matches("sha256:")));
-    s.push_str(&format!("Created: {}\n", info.created.as_deref().unwrap_or("")));
-    s.push_str(&format!("Docker Version: {}\n", info.docker_version.as_deref().unwrap_or("")));
-    s.push_str(&format!("Architecture: {}\n", info.architecture.as_deref().unwrap_or("")));
-    s.push_str(&format!("OS: {}\n", info.os.as_deref().unwrap_or("")));
-    s.push_str(&format!("Size: {}\n", format_bytes(info.size.unwrap_or(0) as u64)));
-    s.push('\n');
-
+    s.push_str(&format!("ID: {}\n", info.id.as_deref().unwrap_or("Unknown")));
     if let Some(tags) = info.repo_tags {
-        s.push_str("TAGS:\n");
-        for tag in tags {
-            s.push_str(&format!("  {}\n", tag));
-        }
-        s.push('\n');
+        s.push_str("Tags:\n");
+        for t in tags { s.push_str(&format!("  {}\n", t)); }
     }
-
-    if let Some(config) = info.config {
-        if let Some(env) = config.env {
-            s.push_str("ENV:\n");
-            for e in env {
-                s.push_str(&format!("  {}\n", e));
-            }
-            s.push('\n');
-        }
-        if let Some(labels) = config.labels {
-            s.push_str("LABELS:\n");
-            for (k, v) in labels {
-                s.push_str(&format!("  {}={}\n", k, v));
-            }
-            s.push('\n');
-        }
-        if let Some(ports) = config.exposed_ports {
-            s.push_str("EXPOSED PORTS:\n");
-            for (k, _) in ports {
-                s.push_str(&format!("  {}\n", k));
-            }
-            s.push('\n');
-        }
-    }
-
+    s.push_str(&format!("Size: {}\n", format_bytes(info.size.unwrap_or(0) as u64)));
     s
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const GB: u64 = 1024 * 1024 * 1024;
-    const MB: u64 = 1024 * 1024;
-
-    if bytes >= GB {
-        format!("{:.1}G", bytes / GB)
-    } else if bytes >= MB {
-        format!("{}M", bytes / MB)
-    } else {
-        format!("{}K", bytes / 1024)
-    }
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 { format!("{} B", bytes) }
+    else if bytes < 1024 * 1024 { format!("{:.1} KB", bytes as f64 / 1024.0) }
+    else if bytes < 1024 * 1024 * 1024 { format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0)) }
+    else { format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0)) }
 }
