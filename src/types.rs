@@ -1,6 +1,113 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use std::collections::VecDeque;
+use std::time::Duration;
+
+// --- Configuration Types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub turbo_mode: bool,
+    pub refresh_rate: RefreshRate,
+    pub stats_view: StatsView,
+    pub poll_strategy: PollStrategy,
+    pub viewport_buffer: usize,
+    pub show_perf_metrics: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            turbo_mode: false,
+            refresh_rate: RefreshRate::Interval(Duration::from_secs(1)),
+            stats_view: StatsView::Detailed,
+            poll_strategy: PollStrategy::AllContainers,
+            viewport_buffer: 5,
+            show_perf_metrics: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "duration")]
+pub enum RefreshRate {
+    Interval(Duration),
+    Manual,
+}
+
+impl RefreshRate {
+    pub fn display(&self) -> String {
+        match self {
+            RefreshRate::Interval(d) => format!("{}s", d.as_secs()),
+            RefreshRate::Manual => "Manual".to_string(),
+        }
+    }
+
+    pub fn increase(&mut self, _is_turbo: bool) {
+        match self {
+            RefreshRate::Interval(d) => {
+                let secs = d.as_secs();
+                let next = match secs {
+                    1 => 2,
+                    2 => 5,
+                    5 => 10,
+                    10 => 30,
+                    30 => {
+                        *self = RefreshRate::Manual;
+                        return;
+                    }
+                    _ => 2,
+                };
+                *self = RefreshRate::Interval(Duration::from_secs(next));
+            }
+            RefreshRate::Manual => {} // Maxed out
+        }
+    }
+
+    pub fn decrease(&mut self, is_turbo: bool) {
+        match self {
+            RefreshRate::Manual => {
+                *self = RefreshRate::Interval(Duration::from_secs(30));
+            }
+            RefreshRate::Interval(d) => {
+                let secs = d.as_secs();
+                let min = if is_turbo { 2 } else { 1 };
+                let next = match secs {
+                    30 => 10,
+                    10 => 5,
+                    5 => 2,
+                    2 => 1,
+                    _ => 1,
+                };
+                if next >= min {
+                    *self = RefreshRate::Interval(Duration::from_secs(next));
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum StatsView {
+    Detailed,
+    Minimal,
+}
+
+impl StatsView {
+    pub fn toggle(&mut self) {
+        *self = match self {
+            StatsView::Detailed => StatsView::Minimal,
+            StatsView::Minimal => StatsView::Detailed,
+        };
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "buffer")]
+pub enum PollStrategy {
+    AllContainers,
+    VisibleOnly,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerInfo {
@@ -66,6 +173,13 @@ pub struct ContainerHealth {
     pub timeout: Option<String>,
     pub retries: Option<i64>,
     pub start_period: Option<String>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct PerfMetrics {
+    pub cpu_usage: f64,
+    pub memory_usage: u64,
+    pub poll_time_ms: u64,
 }
 
 #[derive(thiserror::Error, Debug)]

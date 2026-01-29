@@ -54,6 +54,18 @@ pub fn render_help(f: &mut Frame<'_>, area: Rect) {
 
     // Render Table
     let rows = vec![
+        // Performance Modes
+        Row::new(vec![
+            Cell::from("PERFORMANCE").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from(""),
+        ]),
+        Row::new(vec!["t", "Toggle Turbo/Normal mode"]),
+        Row::new(vec!["m", "Toggle stats view (detailed/minimal)"]),
+        Row::new(vec!["[ ]", "Adjust refresh interval"]),
+        Row::new(vec!["P", "Show performance metrics"]),
+        Row::new(vec!["1/2/3", "Quick presets (1=Max, 2=Balanced, 3=Detail)"]),
+        Row::new(vec!["", ""]), // Spacer
+
         // Navigation
         Row::new(vec![
             Cell::from("NAVIGATION").style(Style::default().add_modifier(Modifier::BOLD)),
@@ -64,6 +76,7 @@ pub fn render_help(f: &mut Frame<'_>, area: Rect) {
         Row::new(vec!["Shift+Tab / v", "Switch View (Containers/Images)"]),
         Row::new(vec!["Esc / q", "Close Help / Quit"]),
         Row::new(vec!["?", "Toggle Help"]),
+        Row::new(vec!["R", "Manual refresh"]),
         Row::new(vec!["", ""]), // Spacer
 
         // Container Actions

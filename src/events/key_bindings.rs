@@ -80,6 +80,98 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
             *needs_fetch = true;
             return false;
         }
+        KeyCode::Char('t') | KeyCode::Char('T') => {
+            {
+                let mut config = app.config.write().unwrap();
+                config.turbo_mode = !config.turbo_mode;
+            }
+            app.apply_turbo_preset();
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('[') => {
+            {
+                let mut config = app.config.write().unwrap();
+                let is_turbo = config.turbo_mode;
+                config.refresh_rate.decrease(is_turbo);
+            }
+            app.save_config();
+            return false;
+        }
+        KeyCode::Char(']') => {
+            {
+                let mut config = app.config.write().unwrap();
+                let is_turbo = config.turbo_mode;
+                config.refresh_rate.increase(is_turbo);
+            }
+            app.save_config();
+            return false;
+        }
+        KeyCode::Char('m') | KeyCode::Char('M') => {
+            {
+                let mut config = app.config.write().unwrap();
+                config.stats_view.toggle();
+            }
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('R') => {
+            let _ = app.refresh_containers().await;
+            if app.current_view == View::Images {
+                let _ = app.refresh_images().await;
+            }
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('P') => {
+            {
+                let mut config = app.config.write().unwrap();
+                config.show_perf_metrics = !config.show_perf_metrics;
+            }
+            app.save_config();
+            return false;
+        }
+        KeyCode::Char('1') => {
+            // Preset 1: Max Performance
+            {
+                let mut config = app.config.write().unwrap();
+                config.turbo_mode = true;
+                config.refresh_rate = crate::types::RefreshRate::Manual;
+                config.stats_view = crate::types::StatsView::Minimal;
+                config.poll_strategy = crate::types::PollStrategy::VisibleOnly;
+            }
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('2') => {
+            // Preset 2: Balanced
+            {
+                let mut config = app.config.write().unwrap();
+                config.turbo_mode = false;
+                config.refresh_rate = crate::types::RefreshRate::Interval(std::time::Duration::from_secs(5));
+                config.stats_view = crate::types::StatsView::Minimal;
+                config.poll_strategy = crate::types::PollStrategy::AllContainers;
+            }
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
+        KeyCode::Char('3') => {
+            // Preset 3: Full Detail
+            {
+                let mut config = app.config.write().unwrap();
+                config.turbo_mode = false;
+                config.refresh_rate = crate::types::RefreshRate::Interval(std::time::Duration::from_secs(1));
+                config.stats_view = crate::types::StatsView::Detailed;
+                config.poll_strategy = crate::types::PollStrategy::AllContainers;
+            }
+            app.save_config();
+            *needs_fetch = true;
+            return false;
+        }
         _ => {}
     }
 
@@ -146,7 +238,7 @@ pub async fn handle_key_events(key: KeyCode, app: &mut App, last_selection_chang
                     let _ = app.stop_container().await;
                     let _ = app.refresh_containers().await;
                 }
-                KeyCode::Char('t') => {
+                KeyCode::Char('S') => {
                     let _ = app.start_container().await;
                     let _ = app.refresh_containers().await;
                 }

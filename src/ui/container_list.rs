@@ -7,7 +7,7 @@ use ratatui::{
 };
 use chrono::Utc;
 use crate::app::App;
-use crate::types::HealthStatus;
+use crate::types::{HealthStatus, RefreshRate};
 
 fn format_uptime(created: i64) -> String {
     let now = Utc::now().timestamp();
@@ -58,6 +58,13 @@ pub fn render_container_list(f: &mut Frame<'_>, area: Rect, app: &mut App) {
     
     let stats_map = app.container_stats.read().unwrap();
     let health_map = app.container_health.read().unwrap();
+    let refresh_rate_secs = {
+        let config = app.config.read().unwrap();
+        match config.refresh_rate {
+            RefreshRate::Interval(d) => d.as_secs(),
+            RefreshRate::Manual => 30, // Default stale threshold for manual
+        }
+    };
 
     // Calculate Summary (based on ALL running containers, not filtered)
     let mut healthy_count = 0;
@@ -124,30 +131,38 @@ pub fn render_container_list(f: &mut Frame<'_>, area: Rect, app: &mut App) {
         };
         
         // Stats
-        let stats_str = if c.state == "running" {
+        let (stats_str, is_stale_row) = if c.state == "running" {
             if let Some(stats) = stats_map.get(&c.id) {
-                let is_stale = Utc::now().timestamp() - stats.last_updated > 10;
+                let age = Utc::now().timestamp() - stats.last_updated;
+                let is_stale = age > (refresh_rate_secs as i64 * 2);
                 let mem_str = format_bytes(stats.memory_usage);
-                if is_stale {
-                     format!("(stale) {:.1}% / {}", stats.cpu_percent, mem_str)
+                let s = if is_stale {
+                     format!("(stale {:.0}s) {:.1}% / {}", age, stats.cpu_percent, mem_str)
                 } else {
                      format!("{:.1}% / {}", stats.cpu_percent, mem_str)
-                }
+                };
+                (s, is_stale)
             } else {
-                "Fetching...".to_string()
+                ("Fetching...".to_string(), false)
             }
         } else {
-            "-".to_string()
+            ("-".to_string(), false)
+        };
+
+        let row_style = if is_stale_row {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
         };
 
         let cells = vec![
-            Cell::from(c.name.clone()).style(Style::default().fg(Color::Cyan)),
+            Cell::from(c.name.clone()).style(if is_stale_row { row_style } else { Style::default().fg(Color::Cyan) }),
             Cell::from(format!("{} {}", status_symbol, c.state))
-                .style(Style::default().fg(status_color).bold()),
-            health_cell,
-            Cell::from(image),
-            Cell::from(uptime),
-            Cell::from(stats_str),
+                .style(if is_stale_row { row_style } else { Style::default().fg(status_color).bold() }),
+            health_cell, // Health cell has its own coloring, we might want to override if stale?
+            Cell::from(image).style(row_style),
+            Cell::from(uptime).style(row_style),
+            Cell::from(stats_str).style(row_style),
         ];
         Row::new(cells).height(1)
     });

@@ -8,9 +8,11 @@ use futures::StreamExt;
 use tokio::sync::Semaphore;
 use chrono::Utc;
 
+use crate::config::{load_config, save_config};
 use crate::docker::client::DockerClient;
-use crate::types::{ContainerInfo, ContainerStats, ImageInfo, Result, ContainerHealth, HealthStatus};
+use crate::types::{ContainerInfo, ContainerStats, ImageInfo, Result, ContainerHealth, HealthStatus, AppConfig, RefreshRate, StatsView, PollStrategy, PerfMetrics};
 use crate::docker::containers::{list_containers, start_container, stop_container, restart_container, remove_container, inspect_container, pause_container, unpause_container};
+use sysinfo::{Pid, System};
 use crate::docker::health::{fetch_health_info, parse_health_status_from_string};
 use crate::docker::images::{list_images, pull_image, remove_image, inspect_image, prune_images};
 use crate::docker::logs::stream_logs;
@@ -57,9 +59,10 @@ pub struct App {
     pub filtered_containers: Vec<ContainerInfo>, // Cache for UI
     pub container_stats: Arc<RwLock<HashMap<String, ContainerStats>>>,
     pub container_health: Arc<RwLock<HashMap<String, ContainerHealth>>>,
+    pub perf_metrics: Arc<RwLock<PerfMetrics>>,
     pub table_state: TableState,
     pub viewport_state: Arc<RwLock<ViewportState>>,
-    pub stats_interval: u64,
+    pub config: Arc<RwLock<AppConfig>>,
     pub show_all: Arc<AtomicBool>,
     pub health_filter: HealthFilter,
     pub container_sort: SortOrder,
@@ -107,11 +110,13 @@ pub struct App {
 }
 
 impl App {
-    pub async fn new(stats_interval: u64) -> Result<Self> {
+    pub async fn new(_stats_interval_arg: u64) -> Result<Self> {
         let docker = DockerClient::new()?;
+        let config = load_config().unwrap_or_default();
         let containers = Arc::new(RwLock::new(Vec::new()));
         let container_stats = Arc::new(RwLock::new(HashMap::new()));
         let container_health = Arc::new(RwLock::new(HashMap::new()));
+        let perf_metrics = Arc::new(RwLock::new(PerfMetrics::default()));
         let viewport_state = Arc::new(RwLock::new(ViewportState::default()));
         
         let mut app = Self {
@@ -120,9 +125,10 @@ impl App {
             filtered_containers: Vec::new(),
             container_stats: container_stats.clone(),
             container_health: container_health.clone(),
+            perf_metrics: perf_metrics.clone(),
             table_state: TableState::default(),
             viewport_state: viewport_state.clone(),
-            stats_interval,
+            config: Arc::new(RwLock::new(config)),
             show_all: Arc::new(AtomicBool::new(true)),
             health_filter: HealthFilter::All,
             container_sort: SortOrder::CreatedDesc,
@@ -308,37 +314,89 @@ impl App {
             }
         });
         
-        // --- Background Task 2: Fetch Stats (every 3s, optimized) ---
+        // --- Background Task 4: Performance Monitoring ---
+        let perf_metrics_clone = perf_metrics.clone();
+        
+        std::thread::spawn(move || {
+            let mut sys = System::new();
+            let pid = Pid::from(std::process::id() as usize);
+            
+            loop {
+                sys.refresh_process(pid);
+                if let Some(process) = sys.process(pid) {
+                    let cpu = process.cpu_usage();
+                    let mem = process.memory();
+                    
+                    if let Ok(mut metrics) = perf_metrics_clone.write() {
+                        metrics.cpu_usage = cpu as f64;
+                        metrics.memory_usage = mem;
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
+
+        // --- Background Task 2: Fetch Stats (Dynamic Polling) ---
         let docker_clone = app.docker.clone();
         let containers_clone = containers.clone();
         let stats_clone = container_stats.clone();
         let viewport_clone = viewport_state.clone();
-        let interval_ms = stats_interval * 1000;
+        let config_clone = app.config.clone();
+        let perf_metrics_poll = app.perf_metrics.clone();
         
         tokio::spawn(async move {
-            let semaphore = Arc::new(Semaphore::new(5)); // Max 5 concurrent requests
+            let semaphore = Arc::new(Semaphore::new(10)); // Max 10 concurrent requests to support larger batches
 
             loop {
                 let start_time = tokio::time::Instant::now();
                 
+                // Read Config
+                let (refresh_rate, poll_strategy, viewport_buffer) = {
+                    let c = config_clone.read().unwrap();
+                    (c.refresh_rate.clone(), c.poll_strategy.clone(), c.viewport_buffer)
+                };
+
+                let interval_ms = match refresh_rate {
+                    RefreshRate::Manual => {
+                         tokio::time::sleep(Duration::from_millis(500)).await;
+                         continue;
+                    },
+                    RefreshRate::Interval(d) => d.as_millis() as u64,
+                };
+
                 // 1. Identify targets
                 let targets: Vec<String> = {
                     let containers = containers_clone.read().unwrap();
-                    let viewport = viewport_clone.read().unwrap();
                     let total = containers.len();
                     
                     if total == 0 {
                         Vec::new()
                     } else {
-                        // Calculate visible range with buffer
-                        let start = viewport.offset.saturating_sub(5);
-                        let end = (viewport.offset + viewport.height as usize + 5).min(total);
-                        
-                        containers[start..end]
-                            .iter()
-                            .filter(|c| c.state == "running")
-                            .map(|c| c.id.clone())
-                            .collect()
+                        match poll_strategy {
+                            PollStrategy::AllContainers => {
+                                containers.iter()
+                                    .filter(|c| c.state == "running")
+                                    .map(|c| c.id.clone())
+                                    .collect()
+                            },
+                            PollStrategy::VisibleOnly => {
+                                let viewport = viewport_clone.read().unwrap();
+                                // Calculate visible range with buffer
+                                let start = viewport.offset.saturating_sub(viewport_buffer);
+                                let end = (viewport.offset + viewport.height as usize + viewport_buffer).min(total);
+                                
+                                if start >= total {
+                                    Vec::new()
+                                } else {
+                                    let actual_end = end.min(total);
+                                    containers[start..actual_end]
+                                        .iter()
+                                        .filter(|c| c.state == "running")
+                                        .map(|c| c.id.clone())
+                                        .collect()
+                                }
+                            }
+                        }
                     }
                 };
 
@@ -349,8 +407,11 @@ impl App {
 
                 // 2. Staggered execution
                 let target_count = targets.len();
+                // If interval is short (e.g. 1s) and targets many (e.g. 100), delay per req might be too small
+                // or we might flood.
+                // If AllContainers, we should try to fit them in interval.
                 let delay_per_req = if target_count > 0 {
-                    interval_ms / target_count as u64
+                    interval_ms / (target_count as u64).max(1)
                 } else {
                     0
                 };
@@ -361,7 +422,9 @@ impl App {
                     let docker = docker_clone.clone();
                     let stats_map = stats_clone.clone();
                     let sem = semaphore.clone();
-                    let delay = delay_per_req * i as u64;
+                    
+                    // Cap max delay to avoid completely stalling if logic is off
+                    let delay = std::cmp::min(delay_per_req * i as u64, interval_ms);
 
                     tasks.push(tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -428,11 +491,13 @@ impl App {
                 }
                 
                 // Wait for all spawned tasks to ensure we don't overrun
-                // Actually, we want to maintain the cycle time. 
-                // Staggering spreads them out. The last one starts at ~3s.
-                // We should wait for the *cycle* to complete.
-                
                 let elapsed = start_time.elapsed();
+                
+                // Update poll time metric
+                if let Ok(mut metrics) = perf_metrics_poll.write() {
+                    metrics.poll_time_ms = elapsed.as_millis() as u64;
+                }
+
                 if elapsed < Duration::from_millis(interval_ms) {
                     tokio::time::sleep(Duration::from_millis(interval_ms) - elapsed).await;
                 }
@@ -867,6 +932,28 @@ impl App {
     pub fn toggle_filter(&mut self) {
         let current = self.show_all.load(Ordering::Relaxed);
         self.show_all.store(!current, Ordering::Relaxed);
+    }
+
+    pub fn apply_turbo_preset(&mut self) {
+        let mut config = self.config.write().unwrap();
+        if config.turbo_mode {
+            // Turbo Mode ON
+            config.refresh_rate = RefreshRate::Interval(Duration::from_secs(2));
+            config.stats_view = StatsView::Minimal;
+            config.poll_strategy = PollStrategy::VisibleOnly;
+        } else {
+            // Turbo Mode OFF (Normal)
+            config.refresh_rate = RefreshRate::Interval(Duration::from_secs(1));
+            config.stats_view = StatsView::Detailed;
+            config.poll_strategy = PollStrategy::AllContainers;
+        }
+    }
+
+    pub fn save_config(&self) {
+        let config = self.config.read().unwrap();
+        if let Err(e) = save_config(&config) {
+            eprintln!("Failed to save config: {}", e);
+        }
     }
 }
 

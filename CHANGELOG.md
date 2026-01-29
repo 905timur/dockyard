@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.2
+## v0.3.0
 
 ### Changed
 - **Enhanced Graphs**: Redesigned CPU and Memory graphs with high resolution Braille markers
@@ -11,6 +11,19 @@
 - **Multi-Dataset Visualization**:
   - CPU: Overlay of System vs User vs Total usage
   - Memory: Visualization of Used vs Cached memory
+
+### What's new?
+- **Performance Modes**: Added Turbo and Normal performance modes
+  - **Turbo Mode**: Optimizes for speed with:
+    - 2-second refresh rate
+    - Minimal stats view (reduced visual complexity)
+    - Visible-only container polling (only fetches stats for containers in view)
+  - **Normal Mode**: Balanced performance with:
+    - 1-second refresh rate
+    - Detailed stats view (full CPU/memory breakdown with history)
+    - All-containers polling (fetches stats for all running containers)
+  - Mode can be toggled via configuration
+  - Presets automatically apply optimal settings for different use cases
 
 ## v0.2.1
 

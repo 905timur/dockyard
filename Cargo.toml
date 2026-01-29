@@ -1,6 +1,6 @@
 [package]
 name = "dockyard"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 authors = ["Timur Gabaidulin <timur.gab@gmail.com>"]
 description = "Dockyard - A high-performance Docker container manager with a beautiful TUI"
@@ -30,6 +30,14 @@ anyhow = "1.0"
 futures = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.17"
+
+# Configuration
+config = "0.14"
+directories = "5.0"
+toml = "0.8"
+
+# System info (for performance metrics)
+sysinfo = "0.30"
 
 [profile.release]
 opt-level = 3

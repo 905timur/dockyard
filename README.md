@@ -102,6 +102,38 @@ This is useful when you want to run a new service (like pulling `nginx` to set u
 ### Removing Images
 Select an image and press `d` to remove it (you'll get a confirmation prompt). If the image is in use by containers, you can force removal with `D` (Shift+d), though this will also prompt for confirmation to prevent accidents.
 
+## Performance Modes
+
+Dockyard offers flexible performance modes to optimize resource usage based on your needs:
+
+### Turbo Mode (High Performance)
+- Activated with `t` key
+- Aggressive optimization for low-spec systems
+- Limits stats polling to visible containers only
+- Disables unnecessary animations
+- Reduces UI overhead
+
+### Normal Mode (Default)
+- Full functionality with balanced resource usage
+- Polls all containers for stats
+- Shows detailed information by default
+
+### Performance Presets
+| Key | Preset | Description |
+|-----|--------|-------------|
+| `1` | Max Performance | Turbo mode + manual refresh + minimal stats |
+| `2` | Balanced | Normal mode + 5-second interval + minimal stats |
+| `3` | Full Detail | Normal mode + 1-second interval + detailed stats |
+
+### Performance Controls
+| Key | Action |
+|-----|--------|
+| `t` | Toggle Turbo/Normal mode |
+| `m` | Toggle stats view (detailed/minimal) |
+| `[` | Decrease refresh interval |
+| `]` | Increase refresh interval |
+| `P` | Show performance metrics (CPU/memory usage) |
+
 ## Navigation Reference
 
 ### Global Keys
@@ -110,6 +142,7 @@ Select an image and press `d` to remove it (you'll get a confirmation prompt). I
 | `?` | Help menu |
 | `Tab` or `Shift+Tab` | Switch between Containers and Images views |
 | `q` | Quit |
+| `R` | Refresh containers and images manually |
 
 ### Container View
 | Key | Action |
