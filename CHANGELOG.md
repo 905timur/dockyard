@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0
+## v0.3.1
 
 ### Changed
 - **Enhanced Graphs**: Redesigned CPU and Memory graphs with high resolution Braille markers
@@ -17,11 +17,14 @@
   - Switch between **Keybindings** and **Wiki** using the `Tab` key
   - Includes project overview, common workflows, and troubleshooting tips
   - Resets to Keybindings tab automatically when closed
-- **Performance Modes**: Added Turbo and Normal performance modes
+- 
+**Performance Modes**: Added Turbo and Normal performance modes
+  
   - **Turbo Mode**: Optimizes for speed with:
     - 2-second refresh rate
     - Minimal stats view (reduced visual complexity)
     - Visible-only container polling (only fetches stats for containers in view)
+  
   - **Normal Mode**: Balanced performance with:
     - 1-second refresh rate
     - Detailed stats view (full CPU/memory breakdown with history)
