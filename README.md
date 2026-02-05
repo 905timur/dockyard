@@ -5,6 +5,8 @@
 ![License](https://img.shields.io/github/license/905timur/dockyard)
 ![Rust](https://img.shields.io/badge/rust-1.75%2B-blue)
 
+![Dockyard logo](https://github.com/905timur/dockyard/blob/main/logo-small.png)
+
 Dockyard is a **terminal-based Docker management tool** built specifically for **resource-constrained VPS servers**.  
 Written in **Rust** with performance as a first-class concern, it provides complete container and image lifecycle management with real-time monitoring—all with minimal overhead and an easy-on-the-eyes TUI.
 
