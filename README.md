@@ -91,3 +91,6 @@ dockyard
 # Adjust stats polling interval (1–10 seconds)
 dockyard --stats-interval 5
 ```
+## Usage
+
+See the repo wiki page or help menu inside the application.
